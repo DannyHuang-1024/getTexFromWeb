@@ -5,6 +5,7 @@ const out = document.getElementById("out");
 
 let lastHtml = ""; // Temporarily storage the HTML strings
 let lastTitle = "page"; // Temporarily save the page name
+let lastTexList = []; // NEW: store extracted LaTeX (KaTeX annotations)
 
 function safeName(s) {
   return (s || "page")
@@ -20,18 +21,29 @@ btnGrab.addEventListener("click", async () => {
 
   try {
     // ------------- 1 Get pages that are activated now 
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });                                                
     if (!tab?.id) throw new Error("Can't not find the title page now");
 
     // 2 conduct scripts in the target page
     const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id }, // Specify the target page
-      func: () => ({
+      func: () => {
+        const normalize = (s) => (s || "").replace(/\s+/g, " ").trim();
+
         // Get the whole HTML code and title of the page
-        html: document.documentElement.outerHTML,
+        const html = document.documentElement.outerHTML;
         // Get the title of the page, if not exist, use "page" instead
-        title: document.title || "page"
-      })
+        const title = document.title || "page";
+
+        // Extract KaTeX original TeX
+        const texList = Array.from(
+            document.querySelectorAll('.katex annotation[encoding="application/x-tex"]')
+        )
+            .map(n => normalize(n.textContent))
+            .filter(Boolean);
+
+        return { html, title, texList };
+      }
     });
 
 
@@ -60,19 +72,23 @@ btnGrab.addEventListener("click", async () => {
     // If data or data.title is undefined, use "page" instead, 
     // and make it safe for file name
     lastTitle = safeName(data?.title ?? "page");
+    lastTexList = Array.isArray(data?.texList) ? data.texList : [];
 
     // -------------- 4 Show the results in popup
     out.textContent = `Length: ${lastHtml.length}\n\n` + lastHtml.slice(0, 2000) + (lastHtml.length > 2000 ? "\n\n...(Truncated display)" : "");
-    btnSave.disabled = !lastHtml; // Enable save button if we have HTML content
+    // btnSave.disabled = !lastHtml; // Enable save button if we have HTML content
+    btnSave.disabled = !lastHtml && lastTexList.length === 0;
   } catch (e) {
-    out.textContent = "Fail: " + e.message;
+    out.textContent =
+        `Length: ${lastHtml.length}\nKaTeX formulas: ${lastTexList.length}\n\n` +
+        lastHtml.slice(0, 2000) +
+        (lastHtml.length > 2000 ? "\n\n...(Truncated display)" : "");
     console.error(e);
   }
 });
 
 btnSave.addEventListener("click", () => {
-  if (!lastHtml) return;
-
+  if (lastHtml){
   // Save the HTML content as a file
   // Blob is a file-like object of immutable, raw data.
   const blob = new Blob([lastHtml], { type: "text/html;charset=utf-8" });
@@ -92,4 +108,28 @@ btnSave.addEventListener("click", () => {
   // Clear blob URL
   // Here 1000ms later to ensure the download is started
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+    // Save TeX list as JSON (if exists)
+  if (lastTexList.length > 0) {
+    const payload = {
+      title: lastTitle,
+      count: lastTexList.length,
+      tex: lastTexList
+    };
+    const blob2 = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json;charset=utf-8"
+    });
+    const url2 = URL.createObjectURL(blob2);
+
+    const a2 = document.createElement("a");
+    a2.href = url2;
+    a2.download = `${lastTitle}_tex.json`;
+    a2.click();
+
+    setTimeout(() => URL.revokeObjectURL(url2), 1000);
+  }
+
 });
+
+
