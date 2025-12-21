@@ -1,0 +1,22 @@
+.show-formula-btn{
+  width: 180px;
+    font-size: 20px;
+    font-weight: bold;
+    padding: 10px 20px;
+    background-color: rgb(14, 97, 181);
+    color: white;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+}
+
+html, body {
+  width: auto;        /* pick what you want */
+  min-width: 150px;    /* prevents shrinking */
+  margin: 0;
+  
+}
+
+body {
+  padding: 12px;       /* optional */
+}
