@@ -1,11 +1,24 @@
 {
-  "name": "Hello Extensions",
-  "description": "Base Level Extension",
-  "version": "1.0",
   "manifest_version": 3,
-  "action": {
-    "default_popup": "hello.html",
-    "default_icon": "hello_extensions.png"
+  "name": "getTexFormula",
+  "version": "2.0.0",
+  "description": "A floating edge panel that slides out on hover and triggers actions on click.",
+  "permissions": ["storage"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "sw.js"
   },
-  "permissions": ["activeTab", "scripting"]
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["panel.html", "panel.css", "panel.js", "resources/panel.svg"],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }
