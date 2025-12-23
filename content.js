@@ -119,6 +119,18 @@
         transition: transform 160ms ease, opacity 160ms ease;
       }
 
+      /* 当靠近底部时，改成“往上弹出” */
+      .ef-wrap[data-menu="up"] .ef-mini{
+        top: auto;
+        bottom: calc(100% + 8px);
+        transform: translateX(-50%) translateY(10px) scale(.96);
+      }
+      .ef-wrap[data-menu="up"]:hover .ef-mini,
+      .ef-wrap[data-menu="up"][data-open="1"] .ef-mini,
+      .ef-wrap[data-menu="up"][data-pinned="1"] .ef-mini{
+        transform: translateX(-50%) translateY(0) scale(1);
+      }
+
       /* 打开条件：hover 或 pinned 或 data-open=1 */
       .ef-wrap:hover .ef-mini,
       .ef-wrap[data-open="1"] .ef-mini,
@@ -164,7 +176,7 @@
         position: absolute;
         left: 50%;
         top: 0;
-        buttom: auto;
+        bottom: auto;
         transform: translateX(-50%);
         width: ${Math.max(MINI_SIZE, FAB_SIZE) + 28}px;
         height: ${FAB_SIZE + (MINI_SIZE + GAP) * 3 + 30}px;
@@ -177,12 +189,18 @@
         pointer-events: auto;
       }
 
+      /* menu 往上弹时，保护区也要往上覆盖 */
+      .ef-wrap[data-menu="up"] .ef-hoverpad{
+        top: auto;
+        bottom: 0;
+      }
+
       /* 可选面板（嵌入 panel.html） */
       .ef-panel{
         position: fixed;
         top: 18vh;
         width: 320px;
-        height: 320px;
+        height: min(70vh, 520px);
         border-radius: 14px;
         overflow: hidden;
         background: white;
@@ -207,6 +225,7 @@
     wrap.dataset.open = "0";        // 是否打开小按钮列表。
     wrap.dataset.pinned = "0";      // 是否锁定展开。
     wrap.dataset.collapsed = "1";   // 是否处于半隐藏。
+    wrap.dataset.menu = "down";     // 小按钮弹出方向：down/up。
 
 
     // 主按钮：使用 SVG 做一个简单菜单图标。
@@ -226,14 +245,13 @@
     const mini = document.createElement("div");
     mini.className = "ef-mini";
     mini.append(
-      // miniBtn("标记公式", "?", () => flashFormulas()),
-      miniBtn("标记公式", "✨", () => {
+      miniBtn("Mark Formulas", "✨", () => {
         ensureKatexStyle();
         const stats = tagKatexAndBindCopy();
         const texList = extractTexListFromPage();
         lastTexList = texList;
         sendTexList();
-        toast(`共标记 ${stats.total} 个公式，其中 ${stats.newlyTagged} 个新标记`);
+        toast(`Marked ${stats.total} formulas, with ${stats.newlyTagged} newly tagged.`);
       }),
       miniBtn("打开面板", "resources/panel.svg", () => togglePanel(true)),
       miniBtn("收起", "×", () => { wrap.dataset.open = "0"; togglePanel(false); if (wrap.dataset.pinned !== "1") collapse(); })
@@ -256,7 +274,7 @@
       if (e.data?.type !== "ACTION" || !action) return;
 
       if (action === "FLASH_FORMULAS") flashFormulas();
-      if (action === "SHOW_TOAST") toast("panel 按钮触发");
+      if (action === "SHOW_TOAST") toast("panel button triggered");
       if (action === "CLOSE_PANEL") togglePanel(false);
     });
 
@@ -361,14 +379,15 @@
       const newSide = (ev.clientX < window.innerWidth / 2) ? "left" : "right";
 
       if (raf) cancelAnimationFrame(raf); // 取消上一帧更新，避免抖动。
-      raf = requestAnimationFrame(() => {
-        wrap.style.top = `${newTop}px`;   // 更新垂直位置。
-        wrap.style.left = "auto";        // 先清空左右定位。
-        wrap.style.right = "auto";
-        wrap.style[newSide] = `${EDGE_MARGIN}px`; // 设置吸附边。
-        wrap.dataset.side = newSide;      // 更新数据状态。
+        raf = requestAnimationFrame(() => {
+          wrap.style.top = `${newTop}px`;   // 更新垂直位置。
+          wrap.style.left = "auto";        // 先清空左右定位。
+          wrap.style.right = "auto";
+          wrap.style[newSide] = `${EDGE_MARGIN}px`; // 设置吸附边。
+          wrap.dataset.side = newSide;      // 更新数据状态。
+          updateMenuDir();
+        });
       });
-    });
 
     fab.addEventListener("pointerup", () => {
       if (!dragging) return;
@@ -377,6 +396,8 @@
       const rect = wrap.getBoundingClientRect();
       const finalTop = clamp(rect.top, TOP_MARGIN, window.innerHeight - FAB_SIZE - BOTTOM_MARGIN);
       const finalSide = wrap.dataset.side;
+
+      updateMenuDir();
 
       // 保存最终位置，供下次进入页面恢复。
       chrome.storage?.local?.set?.({ edgeFabState: { side: finalSide, top: Math.round(finalTop) } });
@@ -394,11 +415,13 @@
       const rect = wrap.getBoundingClientRect();
       const fixedTop = clamp(rect.top, TOP_MARGIN, window.innerHeight - FAB_SIZE - BOTTOM_MARGIN);
       wrap.style.top = `${fixedTop}px`;
+      updateMenuDir();
       chrome.storage?.local?.set?.({ edgeFabState: { side: wrap.dataset.side, top: Math.round(fixedTop) } });
     });
 
     // 初始状态：半隐藏。
     collapse();
+    updateMenuDir();
 
     // --- 小工具函数：创建小按钮。
     function miniBtn(tip, icon, onClick) {
@@ -457,10 +480,22 @@
     }
 
 
+    function updateMenuDir() {
+      const wr = wrap.getBoundingClientRect();
+
+      // 估算菜单高度：3 个小按钮 + 间距 + 上下余量
+      const menuH = (MINI_SIZE * 3) + (GAP * 2) + 16;
+      const spaceBelow = window.innerHeight - wr.bottom;
+      const spaceAbove = wr.top;
+
+      wrap.dataset.menu = (spaceBelow < menuH && spaceAbove > spaceBelow) ? "up" : "down";
+    }
+
     // 控制面板显隐。
     function togglePanel(show) {
       panel.dataset.show = show ? "1" : "0";
       if (show) {
+        updateMenuDir();
         wrap.dataset.open = "1";
         wrap.dataset.collapsed = "0";
         positionPanelNearFab(panel, wrap);
@@ -622,7 +657,7 @@ function positionPanelNearFab(panel, wrap) {
   const wr = wrap.getBoundingClientRect();
 
   const panelW = pr.width || 320;
-  const panelH = pr.height || 320;
+  const panelH = pr.height || Math.min(window.innerHeight * 0.7, 520);
 
   // 目标：面板垂直中心对齐浮标中心
   let top = (wr.top + wr.height / 2) - panelH / 2;

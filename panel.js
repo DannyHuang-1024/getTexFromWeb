@@ -18,7 +18,7 @@ window.addEventListener("message", (e) => {
 
   if (msg.type === "CONTEXT") {
     const { title, url } = msg.payload || {};
-    pageTitle.textContent = title || "（无标题）";
+    pageTitle.textContent = title || "(No Title)";
     pageUrl.textContent = url || "";
   }
 });
@@ -59,13 +59,13 @@ async function copyText(s) {
 function renderTexList(texList) {
   lastTexList = texList;
 
-  if (texCountEl) texCountEl.textContent = `${texList.length} 条`;
+  if (texCountEl) texCountEl.textContent = `Number: ${texList.length}`;
   if (!texListEl) return;
 
   texListEl.innerHTML = "";
 
   if (!texList.length) {
-    texListEl.textContent = "（暂无公式，先在页面点击✨按钮抓取）";
+    texListEl.textContent = "(No formulas yet, click the ✨ button on the page to capture)";
     return;
   }
 
