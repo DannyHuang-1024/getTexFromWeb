@@ -3,6 +3,14 @@
   "name": "getTexFormula",
   "version": "2.0.0",
   "description": "A floating edge panel that slides out on hover and triggers actions on click.",
+  "action": { "default_icon": { "16": "resources/icon_16.png", "32": "resources/icon_32.png" } },
+  "icons": {
+    "16": "resources/icon_16.png",
+    "32": "resources/icon_32.png",
+    "48": "resources/icon_48.png",
+    "128": "resources/icon_128.png"
+  },
+
   "permissions": ["storage"],
   "host_permissions": ["<all_urls>"],
   "background": {
@@ -17,7 +25,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["panel.html", "panel.css", "panel.js", "resources/panel.svg"],
+      "resources": ["panel.html", "panel.css", "panel.js", "resources/panel.svg", "resources/icon.png"],
       "matches": ["<all_urls>"]
     }
   ]
