@@ -44,15 +44,77 @@ btnToast.addEventListener("click", () => sendAction("SHOW_TOAST"));
 btnClose.addEventListener("click", () => sendAction("CLOSE_PANEL"));
 
 async function copyText(s) {
+  const text = String(s || "");
+  if (!text) return false;
+
+  if (copyWithCopyEvent(text)) return true;
+  if (copyWithTextarea(text)) return true;
+
   try {
-    await navigator.clipboard.writeText(s);
+    await navigator.clipboard.writeText(text);
+    return true;
   } catch {
-    const ta = document.createElement("textarea");
-    ta.value = s;
-    document.body.appendChild(ta);
+    return false;
+  }
+}
+
+function copyWithCopyEvent(text) {
+  let handled = false;
+  const listener = (ev) => {
+    ev.preventDefault();
+    ev.clipboardData?.setData("text/plain", text);
+    handled = Boolean(ev.clipboardData);
+  };
+
+  document.addEventListener("copy", listener, true);
+  try {
+    return Boolean(document.execCommand("copy") && handled);
+  } catch {
+    return false;
+  } finally {
+    document.removeEventListener("copy", listener, true);
+  }
+}
+
+function copyWithTextarea(text) {
+  const active = document.activeElement;
+  const selection = document.getSelection?.();
+  const ranges = [];
+
+  if (selection) {
+    for (let i = 0; i < selection.rangeCount; i++) {
+      ranges.push(selection.getRangeAt(i).cloneRange());
+    }
+  }
+
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  Object.assign(ta.style, {
+    position: "fixed",
+    left: "-9999px",
+    top: "0",
+    width: "1px",
+    height: "1px",
+    opacity: "0"
+  });
+
+  document.body.appendChild(ta);
+
+  try {
+    ta.focus({ preventScroll: true });
     ta.select();
-    document.execCommand("copy");
+    ta.setSelectionRange(0, ta.value.length);
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
     ta.remove();
+    if (selection) {
+      selection.removeAllRanges();
+      ranges.forEach((range) => selection.addRange(range));
+    }
+    active?.focus?.({ preventScroll: true });
   }
 }
 
@@ -88,4 +150,3 @@ function renderTexList(texList) {
 btnCopyAll?.addEventListener("click", () => {
   copyText(lastTexList.join("\n\n"));
 });
-

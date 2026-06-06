@@ -246,14 +246,20 @@
     mini.className = "ef-mini";
     mini.append(
       miniBtn("Mark Formulas", "✨", () => {
-        ensureKatexStyle();
-        const stats = tagKatexAndBindCopy();
-        const texList = extractTexListFromPage();
-        lastTexList = texList;
+        ensureFormulaStyle();
+        const stats = tagFormulasAndBindCopy({
+          onCopy: (ok) => toast(ok ? "已复制 LaTeX" : "复制失败，请从面板复制")
+        });
+        lastTexList = stats.texList;
         sendTexList();
+        startFormulaObserver();
         toast(`Marked ${stats.total} formulas, with ${stats.newlyTagged} newly tagged.`);
       }),
-      miniBtn("打开面板", "resources/panel.svg", () => togglePanel(true)),
+      miniBtn("打开面板", "resources/panel.svg", () => {
+        refreshFormulaList();
+        startFormulaObserver();
+        togglePanel(true);
+      }),
       miniBtn("收起", "×", () => { wrap.dataset.open = "0"; togglePanel(false); if (wrap.dataset.pinned !== "1") collapse(); })
     );
 
@@ -273,16 +279,62 @@
       const action = e.data?.payload?.action;
       if (e.data?.type !== "ACTION" || !action) return;
 
-      if (action === "FLASH_FORMULAS") flashFormulas();
+      if (action === "FLASH_FORMULAS") {
+        flashFormulas();
+        startFormulaObserver();
+      }
       if (action === "SHOW_TOAST") toast("panel button triggered");
       if (action === "CLOSE_PANEL") togglePanel(false);
     });
 
 
     let lastTexList = [];
+    let formulaObserver = null;
 
     function sendTexList() {
       iframe.contentWindow?.postMessage({ type: "TEX_LIST", payload: lastTexList }, "*");
+    }
+
+    function refreshFormulaList() {
+      ensureFormulaStyle();
+      const stats = tagFormulasAndBindCopy({
+        flash: false,
+        onCopy: (ok) => toast(ok ? "已复制 LaTeX" : "复制失败，请从面板复制")
+      });
+      lastTexList = stats.texList;
+      sendTexList();
+      return stats;
+    }
+
+    function startFormulaObserver() {
+      if (formulaObserver) return;
+
+      let pending = false;
+      formulaObserver = new MutationObserver((mutations) => {
+        const hasUsefulChange = mutations.some((m) => {
+          if (m.type === "characterData") return maybeContainsLatex(m.target?.textContent || "");
+          return Array.from(m.addedNodes || []).some((node) => {
+            if (node.nodeType === Node.TEXT_NODE) return maybeContainsLatex(node.textContent || "");
+            if (node.nodeType !== Node.ELEMENT_NODE) return false;
+            return node.matches?.(FORMULA_CANDIDATE_SELECTOR) ||
+              node.querySelector?.(FORMULA_CANDIDATE_SELECTOR) ||
+              maybeContainsLatex(node.textContent || "");
+          });
+        });
+
+        if (!hasUsefulChange || pending) return;
+        pending = true;
+        setTimeout(() => {
+          pending = false;
+          refreshFormulaList();
+        }, 250);
+      });
+
+      formulaObserver.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+        characterData: true
+      });
     }
 
 
@@ -504,10 +556,9 @@
 
     // 高亮页面中的公式元素。
     function flashFormulas() {
-      const nodes = [
-        ...document.querySelectorAll("math, .katex, .katex-display, .MathJax, mjx-container")
-      ];
-      if (!nodes.length) return toast("没检测到公式元素");
+      const stats = refreshFormulaList();
+      const nodes = stats.elements;
+      if (!nodes.length) return toast("没检测到可标记的公式元素");
 
       const STYLE_ID = "__edge_fab_flash_style__";
       if (!document.getElementById(STYLE_ID)) {
@@ -528,7 +579,7 @@
         el.classList.add("__edge_fab_flash__");    // 加入动画类。
         setTimeout(() => el.classList.remove("__edge_fab_flash__"), 950); // 动画结束后移除。
       });
-      toast(`已标记 ${nodes.length} 个公式`);
+      toast(`已标记 ${stats.total} 个公式`);
     }
 
     // 页面右下角提示泡泡。
@@ -571,85 +622,554 @@
 })();
 
 
-function extractTexListFromPage() {
-  const normalize = (s) => (s || "").replace(/\s+/g, " ").trim();
+const FORMULA_CONTAINER_SELECTOR = ".katex-display, .katex, .MathJax, mjx-container, math";
+const FORMULA_CANDIDATE_SELECTOR = [
+  FORMULA_CONTAINER_SELECTOR,
+  "annotation[encoding]",
+  'script[type^="math/tex" i]',
+  "[data-tex]",
+  "[data-latex]",
+  "[data-latex-source]",
+  "[data-math]",
+  "[data-value]",
+  '[aria-label*="latex" i]',
+  '[title*="latex" i]'
+].join(",");
+const FORMULA_TEX_ATTR = "data-ext-formula-tex";
+const FORMULA_ID_ATTR = "data-ext-formula-element-id";
 
-  return Array.from(
-    document.querySelectorAll('.katex annotation[encoding="application/x-tex"]')
-  )
-    .map(n => normalize(n.textContent))
-    .filter(Boolean);
+function extractTexListFromPage() {
+  return uniqueTexList(collectFormulaRecords().map((record) => record.tex));
 }
 
-
-function ensureKatexStyle() {
-  const STYLE_ID = "__ext_katex_hover_style__";
+function ensureFormulaStyle() {
+  const STYLE_ID = "__ext_formula_hover_style__";
   if (document.getElementById(STYLE_ID)) return;
 
   const style = document.createElement("style");
   style.id = STYLE_ID;
   style.textContent = `
-    .ext-katex-hover { position: relative; border-radius: 4px; }
-    .ext-katex-hover:hover { outline: 2px solid #000; outline-offset: 2px; }
+    .ext-formula-hover {
+      cursor: copy !important;
+      border-radius: 4px;
+    }
+    .ext-formula-hover:hover {
+      outline: 2px solid #000 !important;
+      outline-offset: 2px !important;
+    }
 
-    .ext-katex-flash { animation: extKatexFlash 1s ease-out forwards; }
-    @keyframes extKatexFlash {
+    .ext-formula-flash { animation: extFormulaFlash 1s ease-out forwards; }
+    @keyframes extFormulaFlash {
       0%   { box-shadow: 0 0 0 2px rgba(0,255,0,1); }
       100% { box-shadow: 0 0 0 2px rgba(0,0,0,0); }
     }
   `;
-  document.head.appendChild(style);
+  (document.head || document.documentElement).appendChild(style);
 }
 
+function ensureKatexStyle() {
+  ensureFormulaStyle();
+}
 
-function tagKatexAndBindCopy() {
-  const katexNodes = Array.from(document.querySelectorAll(".katex"));
-  let tagged = 0;
+function tagKatexAndBindCopy(options = {}) {
+  return tagFormulasAndBindCopy(options);
+}
 
-  for (const k of katexNodes) {
-    if (!k.classList.contains("ext-katex-hover")) {
-      k.classList.add("ext-katex-hover");
-      tagged++;
+function tagFormulasAndBindCopy(options = {}) {
+  const { flash = true, onCopy } = options;
+  const records = collectFormulaRecords();
+  const texList = uniqueTexList(records.map((record) => record.tex));
+  const elementTex = new Map();
+  let newlyTagged = 0;
+
+  bindFormulaCopyDelegate(onCopy);
+
+  for (const record of records) {
+    if (!record.bindable || !record.element?.isConnected) continue;
+    const list = elementTex.get(record.element) || [];
+    list.push(record.tex);
+    elementTex.set(record.element, uniqueTexList(list));
+  }
+
+  for (const [el, texValues] of elementTex) {
+    const tex = texValues.join("\n\n");
+
+    if (!el.classList.contains("ext-formula-hover")) {
+      el.classList.add("ext-formula-hover");
+      newlyTagged++;
     }
 
-    const ann = k.querySelector('annotation[encoding="application/x-tex"]');
-    if (ann) {
-      const tex = (ann.textContent || "").replace(/\s+/g, " ").trim();
-      k.dataset.tex = tex;
-      k.title = tex.length > 300 ? tex.slice(0, 300) + "…" : tex;
+    el.setAttribute(FORMULA_TEX_ATTR, tex);
+    el.title = tex.length > 300 ? `${tex.slice(0, 300)}...` : tex;
 
-      if (!k.dataset.texCopyBound) {
-        k.addEventListener("click", () => {
-          const toCopy = k.dataset.tex || "";
-          const copy = async () => {
-            try {
-              await navigator.clipboard.writeText(toCopy);
-            } catch {
-              const ta = document.createElement("textarea");
-              ta.value = toCopy;
-              document.body.appendChild(ta);
-              ta.select();
-              document.execCommand("copy");
-              ta.remove();
-            }
-          };
-          copy();
-        });
-        k.dataset.texCopyBound = "1";
+    if (flash) {
+      el.classList.remove("ext-formula-flash");
+      void el.offsetWidth;
+      el.classList.add("ext-formula-flash");
+    }
+  }
+
+  if (flash) {
+    setTimeout(() => {
+      for (const el of elementTex.keys()) el.classList.remove("ext-formula-flash");
+    }, 1000);
+  }
+
+  return {
+    total: texList.length,
+    newlyTagged,
+    texList,
+    elements: Array.from(elementTex.keys())
+  };
+}
+
+function collectFormulaRecords() {
+  const records = [];
+
+  collectFromAnnotations(records);
+  collectFromMathJaxScripts(records);
+  collectFromFormulaAttributes(records);
+  collectFromDelimitedText(records);
+
+  return dedupeRecords(records);
+}
+
+function collectFromAnnotations(records) {
+  document.querySelectorAll("annotation[encoding]").forEach((ann) => {
+    const encoding = ann.getAttribute("encoding") || "";
+    if (!isTexEncoding(encoding)) return;
+    addFormulaRecord(records, findFormulaElementFor(ann), ann.textContent, "annotation");
+  });
+}
+
+function collectFromMathJaxScripts(records) {
+  document.querySelectorAll('script[type^="math/tex" i]').forEach((script) => {
+    const target = findRenderedMathJaxElement(script) || script.parentElement;
+    addFormulaRecord(records, target, script.textContent, "mathjax-script");
+  });
+}
+
+function collectFromFormulaAttributes(records) {
+  const attrNames = [
+    "data-tex",
+    "data-latex",
+    "data-latex-source",
+    "data-math",
+    "data-value",
+    "aria-label",
+    "title"
+  ];
+
+  document.querySelectorAll([
+    "[data-tex]",
+    "[data-latex]",
+    "[data-latex-source]",
+    "[data-math]",
+    "[data-value]",
+    "[aria-label]",
+    "[title]"
+  ].join(",")).forEach((el) => {
+    if (isExtensionElement(el)) return;
+
+    for (const attrName of attrNames) {
+      const raw = el.getAttribute(attrName);
+      if (!raw) continue;
+
+      const values = extractTexCandidatesFromText(raw, attrName);
+      const directValue = stripLatexLabel(raw);
+      if (values.length) {
+        values.forEach((tex) => addFormulaRecord(records, el, tex, attrName));
+      } else if (isLikelyTex(directValue, attrName)) {
+        addFormulaRecord(records, el, directValue, attrName);
+      }
+    }
+  });
+}
+
+function collectFromDelimitedText(records) {
+  if (!document.body) return;
+
+  const walker = document.createTreeWalker(
+    document.body,
+    NodeFilter.SHOW_TEXT,
+    {
+      acceptNode(node) {
+        const text = node.textContent || "";
+        if (!maybeContainsLatex(text)) return NodeFilter.FILTER_REJECT;
+
+        const parent = node.parentElement;
+        if (!parent || isExtensionElement(parent)) return NodeFilter.FILTER_REJECT;
+        if (parent.closest("script, style, textarea, input, select, option, noscript")) return NodeFilter.FILTER_REJECT;
+        if (parent.closest(FORMULA_CONTAINER_SELECTOR)) return NodeFilter.FILTER_REJECT;
+        if (!isElementVisible(parent)) return NodeFilter.FILTER_REJECT;
+
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    }
+  );
+
+  const textNodes = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode);
+
+  for (const node of textNodes) {
+    const parent = node.parentElement;
+    const values = extractTexCandidatesFromText(node.textContent || "", "page-text");
+    if (!values.length) continue;
+
+    const bindable = shouldBindTextFormula(parent, node.textContent || "", values);
+    values.forEach((tex) => {
+      addFormulaRecord(records, bindable ? parent : null, tex, "text-delimiter", bindable);
+    });
+  }
+}
+
+function addFormulaRecord(records, element, rawTex, source, bindable = true) {
+  const tex = normalizeTex(stripLatexLabel(rawTex || ""));
+  if (!tex || !isLikelyTex(tex, source)) return;
+
+  const target = normalizeFormulaElement(element);
+  records.push({
+    element: target,
+    tex,
+    source,
+    bindable: Boolean(bindable && target)
+  });
+}
+
+function normalizeFormulaElement(element) {
+  if (!element || element.nodeType !== Node.ELEMENT_NODE) return null;
+  if (isExtensionElement(element)) return null;
+  if (element === document.body || element === document.documentElement) return null;
+  return findFormulaElementFor(element) || element;
+}
+
+function findFormulaElementFor(node) {
+  const el = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+  if (!el) return null;
+  return el.closest(".katex-display") ||
+    el.closest(".katex") ||
+    el.closest("mjx-container") ||
+    el.closest(".MathJax") ||
+    el.closest("math") ||
+    el;
+}
+
+function findRenderedMathJaxElement(script) {
+  const id = script.id;
+  if (id) {
+    const byFrameId = document.getElementById(`${id}-Frame`);
+    if (byFrameId) return byFrameId;
+
+    const escapedFrameId = window.CSS?.escape?.(`${id}-Frame`);
+    if (escapedFrameId) {
+      const byEscapedId = document.querySelector(`#${escapedFrameId}`);
+      if (byEscapedId) return byEscapedId;
+    }
+  }
+
+  let el = script.nextElementSibling;
+  for (let i = 0; el && i < 5; i++, el = el.nextElementSibling) {
+    if (el.matches?.(".MathJax, mjx-container, .katex, .katex-display, math")) return el;
+  }
+
+  el = script.previousElementSibling;
+  for (let i = 0; el && i < 5; i++, el = el.previousElementSibling) {
+    if (el.matches?.(".MathJax, mjx-container, .katex, .katex-display, math")) return el;
+  }
+
+  return null;
+}
+
+function extractTexCandidatesFromText(text, source = "text-delimiter") {
+  const results = [];
+  const raw = String(text || "");
+  const normalized = stripLatexLabel(raw);
+  const jsonStrings = extractStringsFromJson(normalized);
+  const valuesToScan = jsonStrings.length ? jsonStrings : [normalized];
+
+  for (const value of valuesToScan) {
+    const patterns = [
+      /\\\[([\s\S]{1,2400}?)\\\]/g,
+      /\\\(([\s\S]{1,1200}?)\\\)/g,
+      /\$\$([\s\S]{1,2400}?)\$\$/g,
+      /(^|[^$\\])\$((?:\\.|[^$\n]){1,1200}?)\$/g
+    ];
+
+    for (const pattern of patterns) {
+      for (const match of value.matchAll(pattern)) {
+        const tex = normalizeTex(match[2] ?? match[1]);
+        if (tex && isLikelyTex(tex, "delimited-formula")) results.push(tex);
       }
     }
 
-    // 触发闪烁（每次都重置动画）
-    k.classList.remove("ext-katex-flash");
-    void k.offsetWidth;
-    k.classList.add("ext-katex-flash");
+    const direct = normalizeTex(value);
+    if (!results.length && isLikelyTex(direct, source)) results.push(direct);
   }
 
-  setTimeout(() => {
-    for (const k of katexNodes) k.classList.remove("ext-katex-flash");
-  }, 1000);
+  return uniqueTexList(results);
+}
 
-  return { total: katexNodes.length, newlyTagged: tagged };
+function extractStringsFromJson(value) {
+  const trimmed = String(value || "").trim();
+  if (!/^[{\[]/.test(trimmed)) return [];
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    const strings = [];
+    const visit = (node) => {
+      if (typeof node === "string") {
+        if (maybeContainsLatex(node)) strings.push(node);
+        return;
+      }
+      if (Array.isArray(node)) {
+        node.forEach(visit);
+        return;
+      }
+      if (node && typeof node === "object") {
+        Object.values(node).forEach(visit);
+      }
+    };
+    visit(parsed);
+    return strings;
+  } catch {
+    return [];
+  }
+}
+
+function stripLatexLabel(value) {
+  return String(value || "")
+    .replace(/^\s*(?:latex|tex|math|formula)\s*[:：]\s*/i, "")
+    .trim();
+}
+
+function normalizeTex(value) {
+  return String(value || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \t\f\v]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function uniqueTexList(values) {
+  const seen = new Set();
+  const out = [];
+
+  for (const value of values) {
+    const tex = normalizeTex(value);
+    const key = tex.replace(/\s+/g, " ");
+    if (!tex || seen.has(key)) continue;
+    seen.add(key);
+    out.push(tex);
+  }
+
+  return out;
+}
+
+function dedupeRecords(records) {
+  const seen = new Set();
+  const out = [];
+
+  for (const record of records) {
+    const key = `${record.element ? getStableElementKey(record.element) : "no-element"}::${record.tex.replace(/\s+/g, " ")}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(record);
+  }
+
+  return out;
+}
+
+function getStableElementKey(el) {
+  if (!el.getAttribute(FORMULA_ID_ATTR)) {
+    el.setAttribute(FORMULA_ID_ATTR, String(Date.now()) + Math.random().toString(36).slice(2));
+  }
+  return el.getAttribute(FORMULA_ID_ATTR);
+}
+
+function maybeContainsLatex(text) {
+  return /\\[()[\]]|\${1,2}|\\[a-zA-Z]+/.test(String(text || ""));
+}
+
+function isLikelyTex(value, source) {
+  const tex = normalizeTex(value);
+  if (!tex || tex.length > 3000) return false;
+  if (/^(?:https?:\/\/|www\.)/i.test(tex)) return false;
+  if (/^\s*[{\[]/.test(tex) && source !== "annotation" && source !== "mathjax-script") return false;
+  if (/<\/?[a-z][\s\S]*>/i.test(tex)) return false;
+
+  if (/\\(?:frac|sqrt|sum|prod|int|oint|lim|left|right|begin|end|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|omega|Delta|Omega|nabla|partial|cdot|times|div|leq|geq|neq|approx|infty|mathbf|mathrm|text|operatorname|overline|underline|hat|bar)\b/.test(tex)) {
+    return true;
+  }
+
+  if (source === "annotation" || source === "mathjax-script") return /[A-Za-z0-9\\]/.test(tex);
+  if (source === "delimited-formula") {
+    if (/^[\d\s.,]+$/.test(tex)) return false;
+    if (!/[\\_^=+\-*/{}<>]/.test(tex)) {
+      const words = tex.match(/[A-Za-z]{2,}/g) || [];
+      if (words.length > 3) return false;
+    }
+    return /[A-Za-z]/.test(tex) || /[=<>+\-*/^_]/.test(tex);
+  }
+  if (source === "text-delimiter" || source === "page-text") return false;
+  if (/data-(?:tex|latex|latex-source)/.test(source)) return /[A-Za-z0-9]/.test(tex) && /(?:\\|[_^=+\-*/{}])/.test(tex);
+  if (source === "aria-label" || source === "title") return /(?:latex|tex|formula)\s*[:：]/i.test(value) && /[A-Za-z0-9]/.test(tex);
+  if (source === "data-math" || source === "data-value") return /\\[a-zA-Z]+|[_^]/.test(tex) && /[A-Za-z0-9]/.test(tex);
+
+  return /\\/.test(tex) && /[A-Za-z]/.test(tex);
+}
+
+function isTexEncoding(value) {
+  return /(?:application\/x-)?(?:tex|latex)|math\/tex/i.test(String(value || ""));
+}
+
+function shouldBindTextFormula(parent, rawText, values) {
+  if (!parent || values.length > 4) return false;
+
+  const text = normalizeTex(parent.textContent || rawText);
+  if (text.length > 600) return false;
+  if (text.length > normalizeTex(rawText).length + 120) return false;
+
+  return true;
+}
+
+function isExtensionElement(el) {
+  return Boolean(el?.closest?.("#__edge_fab_host__"));
+}
+
+function isElementVisible(el) {
+  const style = window.getComputedStyle(el);
+  if (style.display === "none" || style.visibility === "hidden") return false;
+  return Boolean(el.getClientRects().length);
+}
+
+function bindFormulaCopyDelegate(onCopy) {
+  document.__extFormulaCopyFeedback = onCopy;
+  if (document.__extFormulaCopyDelegateBound) return;
+
+  document.addEventListener("click", handleFormulaCopyClick, true);
+  document.__extFormulaCopyDelegateBound = true;
+}
+
+function handleFormulaCopyClick(ev) {
+  const target = ev.target;
+  if (!target?.closest) return;
+
+  const formulaEl = target.closest(".ext-formula-hover");
+  const toCopy = formulaEl?.getAttribute?.(FORMULA_TEX_ATTR) || "";
+  if (!toCopy) return;
+
+  ev.preventDefault();
+  ev.stopPropagation();
+  ev.stopImmediatePropagation?.();
+
+  Promise.resolve(copyTextToClipboard(toCopy)).then((ok) => {
+    document.__extFormulaCopyFeedback?.(ok);
+  });
+}
+
+function copyTextToClipboard(text) {
+  const value = String(text || "");
+  if (!value) return Promise.resolve(false);
+
+  if (copyWithCopyEvent(value)) return Promise.resolve(true);
+  if (copyWithTextarea(value)) return Promise.resolve(true);
+
+  if (navigator.clipboard?.writeText) {
+    return navigator.clipboard.writeText(value)
+      .then(() => true, () => copyViaExtension(value));
+  }
+
+  return copyViaExtension(value);
+}
+
+function copyViaExtension(text) {
+  return new Promise((resolve) => {
+    if (!chrome.runtime?.sendMessage) {
+      resolve(false);
+      return;
+    }
+
+    try {
+      chrome.runtime.sendMessage(
+        { type: "COPY_TEXT", payload: { text } },
+        (res) => {
+          if (chrome.runtime.lastError) {
+            resolve(false);
+            return;
+          }
+          resolve(Boolean(res?.ok));
+        }
+      );
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+function copyWithCopyEvent(text) {
+  let handled = false;
+  const listener = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    ev.clipboardData?.setData("text/plain", text);
+    handled = Boolean(ev.clipboardData);
+  };
+
+  document.addEventListener("copy", listener, true);
+  try {
+    return Boolean(document.execCommand("copy") && handled);
+  } catch {
+    return false;
+  } finally {
+    document.removeEventListener("copy", listener, true);
+  }
+}
+
+function copyWithTextarea(text) {
+  const root = document.body || document.documentElement;
+  if (!root) return false;
+
+  const active = document.activeElement;
+  const selection = document.getSelection?.();
+  const ranges = [];
+
+  if (selection) {
+    for (let i = 0; i < selection.rangeCount; i++) {
+      ranges.push(selection.getRangeAt(i).cloneRange());
+    }
+  }
+
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  Object.assign(ta.style, {
+    position: "fixed",
+    left: "-9999px",
+    top: "0",
+    width: "1px",
+    height: "1px",
+    opacity: "0",
+    pointerEvents: "none"
+  });
+
+  root.appendChild(ta);
+
+  try {
+    ta.focus({ preventScroll: true });
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    ta.remove();
+    if (selection) {
+      selection.removeAllRanges();
+      ranges.forEach((range) => selection.addRange(range));
+    }
+    active?.focus?.({ preventScroll: true });
+  }
 }
 
 function positionPanelNearFab(panel, wrap) {

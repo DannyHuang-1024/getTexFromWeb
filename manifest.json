@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "getTexFormula",
-  "version": "2.0.0",
-  "description": "A floating edge panel that slides out on hover and triggers actions on click.",
+  "version": "2.1.0",
+  "description": "Capture and copy LaTeX formulas from rendered math on web pages.",
   "action": { "default_icon": { "16": "resources/icon_16.png", "32": "resources/icon_32.png" } },
   "icons": {
     "16": "resources/icon_16.png",
@@ -11,7 +11,7 @@
     "128": "resources/icon_128.png"
   },
 
-  "permissions": ["storage"],
+  "permissions": ["storage", "clipboardWrite", "offscreen"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "sw.js"
