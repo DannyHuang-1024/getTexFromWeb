@@ -2,7 +2,7 @@ const pageTitle = document.getElementById("pageTitle");
 const pageUrl = document.getElementById("pageUrl");
 
 const btnFlash = document.getElementById("btnFlash");
-const btnToast = document.getElementById("btnToast");
+const btnContinuous = document.getElementById("btnContinuous");
 const btnClose = document.getElementById("btnClose");
 
 const texListEl = document.getElementById("texList");
@@ -31,6 +31,13 @@ window.addEventListener("message", (e) => {
   renderTexList(texList);
 });
 
+window.addEventListener("message", (e) => {
+  const msg = e.data;
+  if (msg?.type !== "SCAN_STATE") return;
+
+  renderScanState(Boolean(msg.payload?.continuous));
+});
+
 
 function sendAction(action) {
   window.parent.postMessage(
@@ -40,7 +47,7 @@ function sendAction(action) {
 }
 
 btnFlash.addEventListener("click", () => sendAction("FLASH_FORMULAS"));
-btnToast.addEventListener("click", () => sendAction("SHOW_TOAST"));
+btnContinuous.addEventListener("click", () => sendAction("TOGGLE_CONTINUOUS_SCAN"));
 btnClose.addEventListener("click", () => sendAction("CLOSE_PANEL"));
 
 async function copyText(s) {
@@ -145,6 +152,12 @@ function renderTexList(texList) {
     row.append(code);
     texListEl.appendChild(row);
   });
+}
+
+function renderScanState(enabled) {
+  if (!btnContinuous) return;
+  btnContinuous.textContent = enabled ? "Continuous Scan: On" : "Continuous Scan: Off";
+  btnContinuous.classList.toggle("active", enabled);
 }
 
 btnCopyAll?.addEventListener("click", () => {

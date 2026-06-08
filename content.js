@@ -6,6 +6,7 @@
   // --- 可调参数：控制尺寸、间距、吸边距离、层级等视觉与交互细节。
   const FAB_SIZE = 36;          // 主按钮直径（主按钮小一些）。
   const MINI_SIZE = 40;         // 小按钮直径（小按钮更醒目）。
+  const MINI_BUTTON_COUNT = 4;  // 小按钮数量，用于计算 hover 保护区和弹出方向。
   const GAP = 10;               // 小按钮之间的垂直间距。
   const EDGE_MARGIN = 8;        // 吸附到左右边缘后的内侧偏移。
   const TOP_MARGIN = 10;        // 拖拽可到达的顶部安全边距。
@@ -152,6 +153,11 @@
         font-size: 16px;
       }
       .ef-btn:hover{ transform: translateY(-1px); }
+      .ef-btn[data-active="1"]{
+        background: #e8f0fe;
+        border-color: #8ab4f8;
+        color: #174ea6;
+      }
 
       /* 小按钮提示气泡 */
       .ef-tip{
@@ -179,7 +185,7 @@
         bottom: auto;
         transform: translateX(-50%);
         width: ${Math.max(MINI_SIZE, FAB_SIZE) + 28}px;
-        height: ${FAB_SIZE + (MINI_SIZE + GAP) * 3 + 30}px;
+        height: ${FAB_SIZE + (MINI_SIZE + GAP) * MINI_BUTTON_COUNT + 30}px;
         pointer-events: none; /* 默认不挡网页 */
         background: transparent;
       }
@@ -241,26 +247,36 @@
     const hoverPad = document.createElement("div");
     hoverPad.className = "ef-hoverpad";
 
+    let lastTexList = [];
+    let formulaObserver = null;
+    let continuousScanBtn = null;
+
     // 小按钮组（竖向排列）。
     const mini = document.createElement("div");
     mini.className = "ef-mini";
+    const scanOnceBtn = miniBtn("Scan formulas once", "✨", () => {
+      const stats = scanFormulas({ flash: true });
+      toast(`Scan complete: found ${stats.total} formulas, newly tagged ${stats.newlyTagged}.`);
+    });
+    continuousScanBtn = miniBtn("Enable continuous scan", "↻", () => {
+      if (formulaObserver) {
+        stopFormulaObserver();
+        toast("Continuous LaTeX scanning disabled");
+        return;
+      }
+
+      const stats = scanFormulas({ flash: false });
+      startFormulaObserver();
+      toast(`Continuous LaTeX scanning enabled. Found ${stats.total} formulas.`);
+    });
     mini.append(
-      miniBtn("Mark Formulas", "✨", () => {
-        ensureFormulaStyle();
-        const stats = tagFormulasAndBindCopy({
-          onCopy: (ok) => toast(ok ? "已复制 LaTeX" : "复制失败，请从面板复制")
-        });
-        lastTexList = stats.texList;
-        sendTexList();
-        startFormulaObserver();
-        toast(`Marked ${stats.total} formulas, with ${stats.newlyTagged} newly tagged.`);
-      }),
-      miniBtn("打开面板", "resources/panel.svg", () => {
-        refreshFormulaList();
-        startFormulaObserver();
+      scanOnceBtn,
+      continuousScanBtn,
+      miniBtn("Open panel", "resources/panel.svg", () => {
+        scanFormulas({ flash: false });
         togglePanel(true);
       }),
-      miniBtn("收起", "×", () => { wrap.dataset.open = "0"; togglePanel(false); if (wrap.dataset.pinned !== "1") collapse(); })
+      miniBtn("Collapse", "×", () => { wrap.dataset.open = "0"; togglePanel(false); if (wrap.dataset.pinned !== "1") collapse(); })
     );
 
     // 可选面板：通过 iframe 加载扩展内部页面。
@@ -281,25 +297,46 @@
 
       if (action === "FLASH_FORMULAS") {
         flashFormulas();
-        startFormulaObserver();
+      }
+      if (action === "TOGGLE_CONTINUOUS_SCAN") {
+        if (formulaObserver) {
+          stopFormulaObserver();
+          toast("Continuous LaTeX scanning disabled");
+        } else {
+          const stats = scanFormulas({ flash: false });
+          startFormulaObserver();
+          toast(`Continuous LaTeX scanning enabled. Found ${stats.total} formulas.`);
+        }
       }
       if (action === "SHOW_TOAST") toast("panel button triggered");
       if (action === "CLOSE_PANEL") togglePanel(false);
     });
 
 
-    let lastTexList = [];
-    let formulaObserver = null;
-
     function sendTexList() {
       iframe.contentWindow?.postMessage({ type: "TEX_LIST", payload: lastTexList }, "*");
     }
 
-    function refreshFormulaList() {
+    function sendScanState() {
+      iframe.contentWindow?.postMessage({ type: "SCAN_STATE", payload: { continuous: Boolean(formulaObserver) } }, "*");
+    }
+
+    function updateContinuousScanButton() {
+      if (!continuousScanBtn) return;
+      const enabled = Boolean(formulaObserver);
+      continuousScanBtn.dataset.active = enabled ? "1" : "0";
+      continuousScanBtn.dataset.tip = enabled ? "Disable continuous scan" : "Enable continuous scan";
+      const tip = continuousScanBtn.querySelector(".ef-tip");
+      if (tip) tip.textContent = continuousScanBtn.dataset.tip;
+      sendScanState();
+    }
+
+    function scanFormulas(options = {}) {
+      const { flash = false } = options;
       ensureFormulaStyle();
       const stats = tagFormulasAndBindCopy({
-        flash: false,
-        onCopy: (ok) => toast(ok ? "已复制 LaTeX" : "复制失败，请从面板复制")
+        flash,
+        onCopy: (ok) => toast(ok ? "Copied LaTeX" : "Copy failed. Please copy from the panel.")
       });
       lastTexList = stats.texList;
       sendTexList();
@@ -312,8 +349,10 @@
       let pending = false;
       formulaObserver = new MutationObserver((mutations) => {
         const hasUsefulChange = mutations.some((m) => {
+          if (isNodeInEditableField(m.target)) return false;
           if (m.type === "characterData") return maybeContainsLatex(m.target?.textContent || "");
           return Array.from(m.addedNodes || []).some((node) => {
+            if (isNodeInEditableField(node)) return false;
             if (node.nodeType === Node.TEXT_NODE) return maybeContainsLatex(node.textContent || "");
             if (node.nodeType !== Node.ELEMENT_NODE) return false;
             return node.matches?.(FORMULA_CANDIDATE_SELECTOR) ||
@@ -326,7 +365,7 @@
         pending = true;
         setTimeout(() => {
           pending = false;
-          refreshFormulaList();
+          scanFormulas({ flash: false });
         }, 250);
       });
 
@@ -335,6 +374,14 @@
         subtree: true,
         characterData: true
       });
+      updateContinuousScanButton();
+    }
+
+    function stopFormulaObserver() {
+      if (!formulaObserver) return;
+      formulaObserver.disconnect();
+      formulaObserver = null;
+      updateContinuousScanButton();
     }
 
 
@@ -346,6 +393,7 @@
       );
 
       sendTexList();
+      sendScanState();
     });
 
     // —— 1) hover 展开/收起（带一点延迟，手感更稳）
@@ -535,8 +583,8 @@
     function updateMenuDir() {
       const wr = wrap.getBoundingClientRect();
 
-      // 估算菜单高度：3 个小按钮 + 间距 + 上下余量
-      const menuH = (MINI_SIZE * 3) + (GAP * 2) + 16;
+      // 估算菜单高度：小按钮数量 + 间距 + 上下余量
+      const menuH = (MINI_SIZE * MINI_BUTTON_COUNT) + (GAP * (MINI_BUTTON_COUNT - 1)) + 16;
       const spaceBelow = window.innerHeight - wr.bottom;
       const spaceAbove = wr.top;
 
@@ -556,9 +604,9 @@
 
     // 高亮页面中的公式元素。
     function flashFormulas() {
-      const stats = refreshFormulaList();
+      const stats = scanFormulas({ flash: false });
       const nodes = stats.elements;
-      if (!nodes.length) return toast("没检测到可标记的公式元素");
+      if (!nodes.length) return toast("No formula elements found");
 
       const STYLE_ID = "__edge_fab_flash_style__";
       if (!document.getElementById(STYLE_ID)) {
@@ -579,7 +627,7 @@
         el.classList.add("__edge_fab_flash__");    // 加入动画类。
         setTimeout(() => el.classList.remove("__edge_fab_flash__"), 950); // 动画结束后移除。
       });
-      toast(`已标记 ${stats.total} 个公式`);
+      toast(`Tagged ${stats.total} formulas`);
     }
 
     // 页面右下角提示泡泡。
@@ -637,6 +685,19 @@ const FORMULA_CANDIDATE_SELECTOR = [
 ].join(",");
 const FORMULA_TEX_ATTR = "data-ext-formula-tex";
 const FORMULA_ID_ATTR = "data-ext-formula-element-id";
+const FORMULA_ORIGINAL_TITLE_ATTR = "data-ext-formula-original-title";
+const EDITABLE_FIELD_SELECTOR = [
+  "textarea",
+  "input",
+  "select",
+  "option",
+  '[role="textbox"]',
+  ".ql-editor",
+  ".ProseMirror",
+  ".cm-content",
+  ".monaco-editor",
+  '[data-slate-editor="true"]'
+].join(",");
 
 function extractTexListFromPage() {
   return uniqueTexList(collectFormulaRecords().map((record) => record.tex));
@@ -700,7 +761,7 @@ function tagFormulasAndBindCopy(options = {}) {
     }
 
     el.setAttribute(FORMULA_TEX_ATTR, tex);
-    el.title = tex.length > 300 ? `${tex.slice(0, 300)}...` : tex;
+    setFormulaElementTitle(el, tex);
 
     if (flash) {
       el.classList.remove("ext-formula-flash");
@@ -714,6 +775,8 @@ function tagFormulasAndBindCopy(options = {}) {
       for (const el of elementTex.keys()) el.classList.remove("ext-formula-flash");
     }, 1000);
   }
+
+  cleanupStaleFormulaTags(elementTex);
 
   return {
     total: texList.length,
@@ -770,6 +833,7 @@ function collectFromFormulaAttributes(records) {
     "[title]"
   ].join(",")).forEach((el) => {
     if (isExtensionElement(el)) return;
+    if (isInEditableField(el)) return;
 
     for (const attrName of attrNames) {
       const raw = el.getAttribute(attrName);
@@ -800,6 +864,7 @@ function collectFromDelimitedText(records) {
         const parent = node.parentElement;
         if (!parent || isExtensionElement(parent)) return NodeFilter.FILTER_REJECT;
         if (parent.closest("script, style, textarea, input, select, option, noscript")) return NodeFilter.FILTER_REJECT;
+        if (isInEditableField(parent)) return NodeFilter.FILTER_REJECT;
         if (parent.closest(FORMULA_CONTAINER_SELECTOR)) return NodeFilter.FILTER_REJECT;
         if (!isElementVisible(parent)) return NodeFilter.FILTER_REJECT;
 
@@ -840,6 +905,7 @@ function normalizeFormulaElement(element) {
   if (!element || element.nodeType !== Node.ELEMENT_NODE) return null;
   if (isExtensionElement(element)) return null;
   if (element === document.body || element === document.documentElement) return null;
+  if (isInEditableField(element)) return null;
   return findFormulaElementFor(element) || element;
 }
 
@@ -1037,10 +1103,64 @@ function isExtensionElement(el) {
   return Boolean(el?.closest?.("#__edge_fab_host__"));
 }
 
+function isInEditableField(el) {
+  if (!el?.closest) return false;
+  if (el.closest(EDITABLE_FIELD_SELECTOR)) return true;
+
+  for (let cur = el; cur && cur.nodeType === Node.ELEMENT_NODE; cur = cur.parentElement) {
+    if (cur.isContentEditable) return true;
+    const contentEditable = cur.getAttribute?.("contenteditable");
+    if (/^(?:true|plaintext-only)$/i.test(contentEditable || "")) return true;
+  }
+
+  return false;
+}
+
+function isNodeInEditableField(node) {
+  if (!node) return false;
+  const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  return Boolean(el && isInEditableField(el));
+}
+
 function isElementVisible(el) {
   const style = window.getComputedStyle(el);
   if (style.display === "none" || style.visibility === "hidden") return false;
   return Boolean(el.getClientRects().length);
+}
+
+function setFormulaElementTitle(el, tex) {
+  if (!el.hasAttribute(FORMULA_ORIGINAL_TITLE_ATTR)) {
+    const originalTitle = el.getAttribute("title");
+    if (originalTitle !== null) el.setAttribute(FORMULA_ORIGINAL_TITLE_ATTR, originalTitle);
+  }
+
+  el.title = tex.length > 300 ? `${tex.slice(0, 300)}...` : tex;
+}
+
+function cleanupStaleFormulaTags(activeElementTex) {
+  document.querySelectorAll(".ext-formula-hover").forEach((el) => {
+    if (activeElementTex.has(el) && !isInEditableField(el)) return;
+    clearFormulaTag(el);
+  });
+}
+
+function clearFormulaTag(el) {
+  el.classList.remove("ext-formula-hover", "ext-formula-flash", "__edge_fab_flash__");
+  el.removeAttribute(FORMULA_TEX_ATTR);
+  el.removeAttribute(FORMULA_ID_ATTR);
+
+  if (el.hasAttribute(FORMULA_ORIGINAL_TITLE_ATTR)) {
+    const originalTitle = el.getAttribute(FORMULA_ORIGINAL_TITLE_ATTR);
+    el.removeAttribute(FORMULA_ORIGINAL_TITLE_ATTR);
+    if (originalTitle === null || originalTitle === "") {
+      el.removeAttribute("title");
+    } else {
+      el.setAttribute("title", originalTitle);
+    }
+    return;
+  }
+
+  el.removeAttribute("title");
 }
 
 function bindFormulaCopyDelegate(onCopy) {

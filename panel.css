@@ -90,6 +90,12 @@ body {
   border-color: transparent;
 }
 
+.btn.active {
+  background: #e8f0fe;
+  border-color: #8ab4f8;
+  color: #174ea6;
+}
+
 .hint {
   margin-top: auto;
   font-size: 12px;
