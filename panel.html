@@ -3,37 +3,52 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Edge Panel</title>
+    <title>LaTeX Capture</title>
     <link rel="stylesheet" href="panel.css" />
   </head>
   <body>
     <div class="wrap">
       <div class="head">
-        <div class="title">Panel</div>
+        <div class="title">LaTeX Capture</div>
         <button id="btnClose" class="iconBtn" title="Close">×</button>
       </div>
 
       <div class="meta">
-        <div class="label">Current Page</div>
-        <div id="pageTitle" class="value">Loading</div>
+        <div id="pageTitle" class="value">Current tab</div>
         <div id="pageUrl" class="subvalue"></div>
       </div>
 
       <div class="actions">
-        <button id="btnFlash" class="btn primary">Scan Once</button>
-        <button id="btnContinuous" class="btn">Continuous Scan: Off</button>
+        <button id="btnFlash" class="btn primary">Quick Scan</button>
+        <button id="btnContinuous" class="btn">Continuous: Off</button>
       </div>
 
-      <div class="hint">
-        Mouse hover on the right edge of the browser to trigger the panel; it automatically collapses when leaving the panel.
+      <div class="formatBox">
+        <label class="label" for="copyFormat">Copy format</label>
+        <select id="copyFormat" class="select">
+          <option value="bare">Plain LaTeX</option>
+          <option value="inline-dollar">$ LaTeX $</option>
+          <option value="display-dollar">$$ LaTeX $$</option>
+          <option value="display-bracket">\[ LaTeX \]</option>
+          <option value="inline-paren">\( LaTeX \)</option>
+          <option value="equation">equation environment</option>
+        </select>
       </div>
 
-      <div class="texbar">
-        <button id="btnCopyAll" class="btn">Copy All</button>
-        <span id="texCount" class="count"></span>
-      </div>
+      <div id="status" class="status">Run a scan, then expand results to copy.</div>
 
-      <div id="texList" class="texlist"></div>
+      <details id="texDetails" class="texDetails">
+        <summary class="texSummary">
+          <span>Results</span>
+          <span id="texCount" class="count">0 formulas</span>
+        </summary>
+
+        <div class="texbar">
+          <button id="btnCopyAll" class="btn compact">Copy All</button>
+        </div>
+
+        <div id="texList" class="texlist"></div>
+      </details>
 
     </div>
 

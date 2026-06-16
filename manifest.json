@@ -1,9 +1,12 @@
 {
   "manifest_version": 3,
   "name": "getTexFormula",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Capture and copy LaTeX formulas from rendered math on web pages.",
-  "action": { "default_icon": { "16": "resources/icon_16.png", "32": "resources/icon_32.png" } },
+  "action": {
+    "default_popup": "panel.html",
+    "default_icon": { "16": "resources/icon_16.png", "32": "resources/icon_32.png" }
+  },
   "icons": {
     "16": "resources/icon_16.png",
     "32": "resources/icon_32.png",
@@ -11,7 +14,7 @@
     "128": "resources/icon_128.png"
   },
 
-  "permissions": ["storage", "clipboardWrite", "offscreen"],
+  "permissions": ["storage", "clipboardWrite", "offscreen", "activeTab"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "sw.js"
