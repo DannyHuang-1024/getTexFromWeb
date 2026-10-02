@@ -471,7 +471,7 @@ let currentCopyFormat = COPY_FORMAT_DEFAULT;
 
       formulaObserver.observe(document.documentElement, {
         attributes: true,
-        attributeFilter: ["class", "data-tex", "data-latex", "data-latex-display", "data-latex-source", "data-math", "data-mathml", "data-value", "data-formula", "data-equation", "aria-label", "title"],
+        attributeFilter: ["class", "data-tex", "data-latex", "data-latex-display", "data-latex-source", "data-math", "data-math-source", "data-mathml", "data-value", "data-formula", "data-equation", "aria-label", "title"],
         childList: true,
         subtree: true,
         characterData: true
@@ -509,6 +509,7 @@ let currentCopyFormat = COPY_FORMAT_DEFAULT;
         if (formulaAttributeMayContainTex(node, "data-latex-display")) return true;
         if (formulaAttributeMayContainTex(node, "data-latex-source")) return true;
         if (formulaAttributeMayContainTex(node, "data-math")) return true;
+        if (formulaAttributeMayContainTex(node, "data-math-source")) return true;
         if (formulaAttributeMayContainTex(node, "data-mathml")) return true;
         if (formulaAttributeMayContainTex(node, "data-value")) return true;
         if (formulaAttributeMayContainTex(node, "data-formula")) return true;
@@ -523,7 +524,7 @@ let currentCopyFormat = COPY_FORMAT_DEFAULT;
         if (attrName === "class") return node.matches?.(FORMULA_CONTAINER_SELECTOR) || node.querySelector?.(FORMULA_CONTAINER_SELECTOR);
         const raw = node.getAttribute(attrName) || "";
         if (!raw) return false;
-        if (/^(?:data-tex|data-latex|data-latex-source|data-latex-display|data-math|data-mathml|data-value|data-formula|data-equation)$/i.test(attrName)) return true;
+        if (/^(?:data-tex|data-latex|data-latex-source|data-latex-display|data-math|data-math-source|data-mathml|data-value|data-formula|data-equation)$/i.test(attrName)) return true;
         return textMayContainFormula(raw) || /(?:latex|tex|formula)/i.test(raw);
       }
 
@@ -841,34 +842,45 @@ let currentCopyFormat = COPY_FORMAT_DEFAULT;
 })();
 
 
-const FORMULA_CONTAINER_SELECTOR = ".math-block, .math-inline, .katex-display, .katex, .MathJax, mjx-container, math";
-const FORMULA_CANDIDATE_SELECTOR = [
-  FORMULA_CONTAINER_SELECTOR,
+// 强公式载体：命中这些选择器的元素几乎可以确定就是公式，扫描时优先处理。
+const STRONG_FORMULA_SELECTOR = [
+  "math",
+  "mjx-container",
+  ".MathJax",
+  ".katex",
+  ".katex-display",
+  ".math-block",
+  ".math-inline",
+  '[role="math"]',
   "annotation[encoding]",
   'script[type^="math/tex" i]',
-  "[data-tex]",
-  "[data-latex]",
-  "[data-latex-display]",
-  "[data-latex-source]",
+  "[data-math-source]",
   "[data-math]",
   "[data-mathml]",
+  "[data-latex-display]",
+  "[data-latex]",
+  "[data-latex-source]",
+  "[data-tex]"
+].join(", ");
+
+const FORMULA_CONTAINER_SELECTOR = `${STRONG_FORMULA_SELECTOR}, [data-formula], [data-equation]`;
+const FORMULA_CANDIDATE_SELECTOR = [
+  FORMULA_CONTAINER_SELECTOR,
   "[data-value]",
-  "[data-formula]",
-  "[data-equation]",
   '[aria-label*="latex" i]',
   '[title*="latex" i]'
 ].join(",");
 const FORMULA_TEX_ATTR = "data-ext-formula-tex";
 const FORMULA_ID_ATTR = "data-ext-formula-element-id";
 const FORMULA_ORIGINAL_TITLE_ATTR = "data-ext-formula-original-title";
-const MAX_ATTRIBUTE_SCAN_NODES = 70;
+const MAX_ATTRIBUTE_SCAN_NODES = 400;
 const MAX_TEXT_SCAN_NODES = 36;
 const MAX_DOM_SCAN_NODES = 320;
 const MAX_TEXT_SCAN_MS = 10;
-const MAX_FORMULA_RECORDS = 80;
+const MAX_FORMULA_RECORDS = 200;
 const MAX_VIEWPORT_SCAN_ROOTS = 48;
 const MAX_VIEWPORT_DATA_MATH_NODES = 220;
-const MAX_VIEWPORT_ATTRIBUTE_SCAN_NODES = 240;
+const MAX_VIEWPORT_ATTRIBUTE_SCAN_NODES = 400;
 const MAX_VIEWPORT_TEXT_SCAN_NODES = 110;
 const MAX_VIEWPORT_DOM_SCAN_NODES = 2200;
 const MAX_VIEWPORT_TEXT_SCAN_MS = 28;
@@ -1070,6 +1082,7 @@ function collectFromDataMath(records, roots = [document], scope = "document") {
 
   const attrNames = [
     "data-math",
+    "data-math-source",
     "data-mathml",
     "data-latex-display",
     "data-formula",
@@ -1231,32 +1244,60 @@ function collectFromFormulaAttributes(records, roots = [document], scope = "docu
 
   const maxScanned = scope === "viewport" ? MAX_VIEWPORT_ATTRIBUTE_SCAN_NODES : MAX_ATTRIBUTE_SCAN_NODES;
   const maxAttrLength = scope === "viewport" ? 12000 : 3200;
-  let scanned = 0;
+
+  // 通用属性名（aria-label/title/alt 等）在普通页面上会命中成百上千个无关元素，
+  // 比如导航、按钮、图标。若按文档顺序扫描，预算会被这些元素吃光，真正的公式排在后面就被丢掉。
+  // 因此拆成两桶：先扫“强公式载体”（KaTeX/MathJax/role=math/明确的数学 data-*），再扫弱信号。
+  const strongSet = new Set();
+  for (const root of roots) {
+    for (const el of queryWithin(root, STRONG_FORMULA_SELECTOR)) strongSet.add(el);
+  }
+
+  const strongElements = [];
+  const weakElements = [];
+  const seenElements = new Set();
+
   for (const root of roots) {
     for (const el of queryWithin(root, selector)) {
-      if (records.length >= MAX_FORMULA_RECORDS * 3) return;
-      if (++scanned > maxScanned) return;
-      if (isExtensionElement(el)) continue;
-      if (isInEditableField(el)) continue;
+      if (seenElements.has(el)) continue;
+      seenElements.add(el);
+      // 用 closest 只向上走祖先链，代价和 DOM 深度相关；
+      // 比每个元素都做一次子树 querySelector 便宜得多。
+      if (strongSet.has(el) || el.closest?.(STRONG_FORMULA_SELECTOR)) {
+        strongElements.push(el);
+      } else {
+        weakElements.push(el);
+      }
+    }
+  }
 
-      for (const attrName of attrNames) {
-        const raw = el.getAttribute(attrName);
-        if (!raw) continue;
-        if (raw.length > maxAttrLength) continue;
+  const ordered = strongElements.concat(weakElements);
 
-        const mathMlValues = extractTexFromMathMlString(raw);
-        if (mathMlValues.length) {
-          mathMlValues.forEach((tex) => addFormulaRecord(records, el, tex, "mathml", true, el, scope));
-          continue;
-        }
+  for (let i = 0; i < ordered.length; i++) {
+    if (records.length >= MAX_FORMULA_RECORDS * 3) return;
+    // 弱信号元素有严格预算；强信号元素不受它限制，只要还有公式没扫完就继续。
+    if (i >= strongElements.length && i - strongElements.length >= maxScanned) return;
+    const el = ordered[i];
+    if (isExtensionElement(el)) continue;
+    if (isInEditableField(el)) continue;
 
-        const values = extractTexCandidatesFromText(raw, attrName);
-        const directValue = stripLatexLabel(raw);
-        if (values.length) {
-          values.forEach((tex) => addFormulaRecord(records, el, tex, "delimited-formula", true, el, scope));
-        } else if (isLikelyTex(directValue, attrName)) {
-          addFormulaRecord(records, el, directValue, attrName, true, el, scope);
-        }
+    for (const attrName of attrNames) {
+      const raw = el.getAttribute(attrName);
+      if (!raw) continue;
+      if (raw.length > maxAttrLength) continue;
+
+      const mathMlValues = extractTexFromMathMlString(raw);
+      if (mathMlValues.length) {
+        mathMlValues.forEach((tex) => addFormulaRecord(records, el, tex, "mathml", true, el, scope));
+        continue;
+      }
+
+      const values = extractTexCandidatesFromText(raw, attrName);
+      const directValue = stripLatexLabel(raw);
+      if (values.length) {
+        values.forEach((tex) => addFormulaRecord(records, el, tex, "delimited-formula", true, el, scope));
+      } else if (isLikelyTex(directValue, attrName)) {
+        addFormulaRecord(records, el, directValue, attrName, true, el, scope);
       }
     }
   }
@@ -2044,7 +2085,8 @@ function getFormulaRecordPriority(element, tex, source) {
   if (source === "annotation" || source === "mathjax-script") score += 90;
   else if (source === "mathml" || source === "rendered-math") score += 75;
   else if (source === "data-latex-display") score += 70;
-  else if (source === "data-math" || source === "data-mathml" || source === "data-formula" || source === "data-equation" || source === "data-value") score += 60;
+  else if (source === "data-math" || source === "data-math-source" || source === "data-mathml" || source === "data-formula" || source === "data-equation" || source === "data-value") score += 60;
+  else if (source === "aria-label") score += 40;
   else if (source === "data-tex" || source === "data-latex" || source === "data-latex-source") score += 45;
   else if (source === "delimited-formula") score += 30;
   else if (source === "text-delimiter") score += 15;
@@ -2087,7 +2129,7 @@ function getViewportRootPriority(el) {
   if (el.matches?.(".math-block, .katex-display")) score += 140;
   else if (el.matches?.(".math-inline, .katex, mjx-container, .MathJax, math")) score += 55;
 
-  if (el.matches?.("[data-math], [data-mathml], [data-latex-display], [data-formula], [data-equation], [data-value], [data-tex], [data-latex], [data-latex-source]")) {
+  if (el.matches?.("[data-math], [data-math-source], [data-mathml], [data-latex-display], [data-formula], [data-equation], [data-value], [data-tex], [data-latex], [data-latex-source]")) {
     score += 35;
   }
 
@@ -2134,9 +2176,7 @@ function isLikelyTex(value, source) {
   if (/^\s*[{\[]/.test(tex) && source !== "annotation" && source !== "mathjax-script") return false;
   if (/<\/?[a-z][\s\S]*>/i.test(tex)) return false;
 
-  if (/\\(?:frac|sqrt|sum|prod|int|oint|lim|left|right|begin|end|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|omega|Delta|Omega|nabla|partial|cdot|times|div|leq|geq|neq|approx|infty|mathbf|mathrm|text|operatorname|overline|underline|hat|bar)\b/.test(tex)) {
-    return true;
-  }
+  if (hasExplicitTexCommand(tex)) return true;
 
   if (source === "annotation" || source === "mathjax-script") return /[A-Za-z0-9\\]/.test(tex);
   if (source === "mathml" || source === "rendered-math") return /[A-Za-z0-9\\_^=+\-*/{}<>]/.test(tex);
@@ -2149,12 +2189,8 @@ function isLikelyTex(value, source) {
     return /[A-Za-z]/.test(tex) || /[=<>+\-*/^_]/.test(tex);
   }
   if (source === "page-text") return false;
-  if (/data-(?:tex|latex|latex-display|latex-source|math|mathml|formula|equation)/.test(source)) {
-    if (/^[A-Za-z]{1,2}$/.test(tex)) return true;
-    if (/^[0-9]+(?:\.[0-9]+)?$/.test(tex)) return true;
-    if (/^[A-Za-z0-9._\-+*/^=(),[\]{}\\ ]{1,24}$/.test(tex) && /(?:\\|[_^=+\-*/{}<>])/.test(tex)) return true;
-    if (/^[A-Za-z0-9._\-+*/^=(),[\]{}\\'| ]{1,80}$/.test(tex) && /[A-Za-z0-9]/.test(tex) && /[(),'\[\]{}]/.test(tex)) return true;
-    return /[A-Za-z0-9]/.test(tex) && /\\[a-zA-Z]+/.test(tex);
+  if (/data-(?:tex|latex|latex-display|latex-source|math|math-source|mathml|formula|equation)/.test(source)) {
+    return looksLikeMathExpression(tex, true);
   }
   if (source === "data-value") {
     return /[A-Za-z0-9]/.test(tex) && /(?:\\[a-zA-Z]+|[_^=+\-*/{}<>])/.test(tex);
@@ -2162,12 +2198,58 @@ function isLikelyTex(value, source) {
   if (/data-(?:source|original|content|text|raw|markdown|expression|asciimath)/.test(source)) {
     return /[A-Za-z0-9]/.test(tex) && /(?:\\[a-zA-Z]+|[_^=+\-*/{}<>])/.test(tex);
   }
+  // aria-label / title / alt 里可能直接就是裸 LaTeX（ChatGPT、部分 Gemini 页面就是这样），
+  // 不再强制要求 "latex:" 之类的前缀。
+  // 但 title="2024" 这类普通 UI 文本很常见，所以裸数字/单字母只在 data-* 属性里才算公式。
   if (source === "aria-label" || source === "aria-description" || source === "alt" || source === "title") {
-    return /(?:latex|tex|math|formula|equation)\s*[:：]/i.test(value) && /[A-Za-z0-9]/.test(tex);
+    return looksLikeMathExpression(tex) || containsNonAsciiButNotCjk(tex);
   }
-  if (source === "data-math" || source === "data-value") return /\\[a-zA-Z]+|[_^]/.test(tex) && /[A-Za-z0-9]/.test(tex);
 
   return /\\/.test(tex) && /[A-Za-z]/.test(tex);
+}
+
+// 明确的 LaTeX 命令：出现即认为是公式，无需再看字符白名单。
+function hasExplicitTexCommand(tex) {
+  return /\\(?:frac|sqrt|sum|prod|int|oint|lim|left|right|begin|end|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|omega|Delta|Omega|nabla|partial|cdot|times|div|leq|geq|neq|approx|infty|mathbf|mathrm|text|operatorname|overline|underline|hat|bar|boxed|dfrac|tfrac|binom|matrix|pmatrix|bmatrix|vmatrix|cases|aligned|array|vec|tilde|widehat|widetilde|stackrel|underbrace|overbrace|substack|phantom|quad|qquad|space|hspace|iff|implies|to|mapsto|in|notin|subset|supset|cup|cap|forall|exists|neg|land|lor|cong|equiv|sim|propto|pm|mp|ast|star|circ|bullet|oplus|otimes|prime|ell|eta|rho|tau|phi|varphi|psi|chi|zeta|xi|nu|kappa|iota|epsilon|varepsilon|varphi|varrho|varsigma|vartheta|ell|Re|Im|arg|deg|dim|exp|hom|ker|lg|ln|log|sin|cos|tan|cot|sec|csc|arcsin|arccos|arctan|sinh|cosh|tanh|max|min|sup|inf|det|gcd|lcm|pmod|bmod)\b/.test(tex);
+}
+
+// 数学表达式启发式：允许非 ASCII（公式里常有中文 \text{...}）。
+// 判定要点是“像数学”，而不是“全是 ASCII”。
+// allowBareAtom 只在明确的数学属性（data-*）下开启：像 `D`、`2024` 这样的裸值
+// 单独出现时无法与普通 UI 文本区分，只有在数学属性里才安全地当作公式。
+function looksLikeMathExpression(tex, allowBareAtom = false) {
+  if (allowBareAtom) {
+    if (/^[A-Za-z]{1,2}$/.test(tex)) return true;
+    if (/^[0-9]+(?:\.[0-9]+)?$/.test(tex)) return true;
+  }
+
+  // 没有数学运算符时，只有明确的 \command 才算公式。
+  if (!/[\\_^=+\-*/{}<>]/.test(tex) || tex.length > 2000) {
+    return /[A-Za-z0-9]/.test(tex) && /\\[a-zA-Z]+/.test(tex);
+  }
+
+  // 唯一的运算符是斜杠，且没有任何数字/上下标/反斜杠时，多半是 "n/a"、"and/or" 这类缩写。
+  if (!/[\\_^={}<>+\-*]/.test(tex) && !/[0-9]/.test(tex) && /\//.test(tex)) return false;
+
+  // 自然语言判别：含空格分隔的普通英文单词时多半是句子/UI 文案，而不是公式。
+  // 例如 "A/B testing" 带斜杠但显然是文案；而 "D_n = 2D_{n-1}" 没有英文单词。
+  // 出现 = ^ \ { } 这类强数学符号时不再按自然语言拒绝。
+  const tokens = tex.trim().split(/\s+/);
+  if (tokens.length >= 2 && !/[=^\\{}]/.test(tex)) {
+    const proseWords = tokens.filter((t) => /^[A-Za-z]{3,}[.,;:!?]?$/.test(t)).length;
+    if (proseWords >= 1) return false;
+  }
+
+  return true;
+}
+
+// 含有非 ASCII 字符（如希腊字母 α、中文 \text{常数}）且不是 CJK 自然语言长句。
+function containsNonAsciiButNotCjk(tex) {
+  if (!/[^\x00-\x7f]/.test(tex)) return false;
+  const cjk = (tex.match(/[一-鿿]/g) || []).length;
+  const total = tex.replace(/\s/g, "").length || 1;
+  if (cjk / total > 0.6 && tex.length > 12) return false;
+  return /[\\_^=+\-*/{}<>]/.test(tex);
 }
 
 function isTexEncoding(value) {

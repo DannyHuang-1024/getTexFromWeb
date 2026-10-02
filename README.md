@@ -6,6 +6,9 @@ Floating edge-panel and popup Chrome/Edge extension for capturing LaTeX formulas
 - Draggable floating action button that docks to either edge, half-hides automatically, and remembers its position via storage.
 - Marks formulas in-page, adds hover outlines, and lets you click any formula to copy its TeX.
 - Detects TeX from KaTeX annotations, MathJax script nodes, MathML, rendered MathJax trees, trusted formula attributes such as `data-math`, and inline/display delimiters such as `$...$`, `$$...$$`, `\(...\)`, and `\[...\]`.
+- Recognises `role="math"` elements and the `data-math-source` attribute (used by ChatGPT-style pages), plus bare LaTeX stored directly in `aria-label` / `title` / `alt` without a `latex:` prefix.
+- Scans strong formula carriers (KaTeX/MathJax/`role=math`/math `data-*`) before generic `aria-label`/`title` signals, so a page's ordinary UI attributes cannot exhaust the scan budget before the real formulas are reached.
+- Accepts formulas containing non-ASCII text such as `\boxed{\text{常数}}`, while still rejecting ordinary UI strings (`title="2024"`, `aria-label="A/B testing"`) as non-formulas.
 - Uses a bounded viewport-nearby scanner for faster marking on long dynamic pages, with priority for visible formulas, display formulas, and longer TeX.
 - Handles Gemini-style `math-block` / `math-inline` formula markup where source TeX is stored in `data-math`.
 - Watches dynamic pages after the first scan, so newly streamed formulas can be captured without reopening the page.
