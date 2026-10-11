@@ -960,11 +960,12 @@ const CHROME_REGION_SELECTOR = [
   "mat-action-list",
   "mat-toolbar",
   "form",
-  '[class*="sidebar" i]',
-  '[class*="sidenav" i]',
-  '[class*="composer" i]',
-  '[id*="sidebar" i]',
-  '[id*="composer" i]',
+  // class/id 只按完整单词匹配：子串匹配会命中 composer-parent、has-sidebar 这类包住整页的布局类名。
+  "[class~=sidebar]",
+  "[class~=sidenav]",
+  "[class~=composer]",
+  "#sidebar",
+  "#composer",
   '[data-testid*="sidebar" i]',
   '[data-testid*="composer" i]',
   '[data-testid*="history" i]'
@@ -1084,8 +1085,11 @@ function tagFormulasAndBindCopy(options = {}) {
       newlyTagged++;
     }
 
-    el.setAttribute(FORMULA_TEX_ATTR, tex);
-    setFormulaElementTitle(el, tex);
+    // 值没变就不写：重复写 attribute 同样会产生 mutation，让持续扫描自己触发自己。
+    if (el.getAttribute(FORMULA_TEX_ATTR) !== tex) {
+      el.setAttribute(FORMULA_TEX_ATTR, tex);
+      setFormulaElementTitle(el, tex);
+    }
 
     if (flash) {
       el.classList.remove("ext-formula-flash");
@@ -1101,6 +1105,7 @@ function tagFormulasAndBindCopy(options = {}) {
   }
 
   if (cleanup) cleanupStaleFormulaTags(elementTex);
+  else cleanupInvalidFormulaTags(elementTex);
 
   return {
     total: texList.length,
@@ -2283,11 +2288,16 @@ function getFormulaTextPriority(value) {
   return score;
 }
 
+// 用 WeakMap 给元素编号，而不是往页面元素上写属性：写属性会污染 DOM，还会触发持续扫描的 MutationObserver。
+const stableElementKeys = new WeakMap();
+let stableElementKeySeq = 0;
 function getStableElementKey(el) {
-  if (!el.getAttribute(FORMULA_ID_ATTR)) {
-    el.setAttribute(FORMULA_ID_ATTR, String(Date.now()) + Math.random().toString(36).slice(2));
+  let key = stableElementKeys.get(el);
+  if (!key) {
+    key = `e${++stableElementKeySeq}`;
+    stableElementKeys.set(el, key);
   }
-  return el.getAttribute(FORMULA_ID_ATTR);
+  return key;
 }
 
 // 文本里是否带有 LaTeX 信号：分隔符、\command，或 ^ _ 与 {} 组合。
@@ -2574,6 +2584,17 @@ function cleanupStaleFormulaTags(activeElementTex) {
   });
 }
 
+// 持续扫描不做整页清理（视口外的标记要保留），但已经不满足识别规则的标记（进入输入区、用户气泡、
+// 外壳区域，或被框架复用成了别的内容）必须摘掉，否则点击会复制出过期内容。
+function cleanupInvalidFormulaTags(activeElementTex) {
+  document.querySelectorAll(".ext-formula-hover").forEach((el) => {
+    if (activeElementTex.has(el)) return;
+    if (isInEditableField(el) || containsEditableField(el) || isInUserMessage(el) || !el.isConnected) {
+      clearFormulaTag(el);
+    }
+  });
+}
+
 function clearAllFormulaTags() {
   document.querySelectorAll(".ext-formula-hover, [" + FORMULA_TEX_ATTR + "]").forEach(clearFormulaTag);
 }
@@ -2612,6 +2633,10 @@ function handleFormulaCopyClick(ev) {
   const formulaEl = target.closest(".ext-formula-hover");
   const toCopy = formulaEl?.getAttribute?.(FORMULA_TEX_ATTR) || "";
   if (!toCopy) return;
+
+  // 拖选文字后松开鼠标也会触发 click，此时用户是想复制选区，不要抢走。
+  const selection = window.getSelection?.();
+  if (selection && !selection.isCollapsed && String(selection).trim()) return;
 
   ev.preventDefault();
   ev.stopPropagation();
