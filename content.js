@@ -2703,35 +2703,10 @@ function copyTextToClipboard(text) {
   if (copyWithTextarea(value)) return Promise.resolve(true);
 
   if (navigator.clipboard?.writeText) {
-    return navigator.clipboard.writeText(value)
-      .then(() => true, () => copyViaExtension(value));
+    return navigator.clipboard.writeText(value).then(() => true, () => false);
   }
 
-  return copyViaExtension(value);
-}
-
-function copyViaExtension(text) {
-  return new Promise((resolve) => {
-    if (!chrome.runtime?.sendMessage) {
-      resolve(false);
-      return;
-    }
-
-    try {
-      chrome.runtime.sendMessage(
-        { type: "COPY_TEXT", payload: { text } },
-        (res) => {
-          if (chrome.runtime.lastError) {
-            resolve(false);
-            return;
-          }
-          resolve(Boolean(res?.ok));
-        }
-      );
-    } catch {
-      resolve(false);
-    }
-  });
+  return Promise.resolve(false);
 }
 
 function copyWithCopyEvent(text) {

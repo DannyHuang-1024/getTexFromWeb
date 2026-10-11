@@ -294,32 +294,8 @@ async function copyText(s) {
     await navigator.clipboard.writeText(text);
     return true;
   } catch {
-    return copyViaExtension(text);
+    return false;
   }
-}
-
-function copyViaExtension(text) {
-  return new Promise((resolve) => {
-    if (!chrome.runtime?.sendMessage) {
-      resolve(false);
-      return;
-    }
-
-    try {
-      chrome.runtime.sendMessage(
-        { type: "COPY_TEXT", payload: { text } },
-        (res) => {
-          if (chrome.runtime.lastError) {
-            resolve(false);
-            return;
-          }
-          resolve(Boolean(res?.ok));
-        }
-      );
-    } catch {
-      resolve(false);
-    }
-  });
 }
 
 function copyWithCopyEvent(text) {

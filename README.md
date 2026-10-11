@@ -16,7 +16,7 @@ Floating edge-panel and popup Chrome/Edge extension for capturing LaTeX formulas
 - Panel/popup shows current page info, runs quick scans, toggles continuous scanning, lists captured TeX with one-click copy, and provides Copy All.
 - Copy format setting supports plain LaTeX, `$...$`, `$$...$$`, `\[...]`, `\(...)`, and `equation` environment wrappers. The setting is saved and also applies to clicking highlighted formulas on the page.
 - Uses multiple clipboard fallbacks, including an MV3 offscreen document, for sites that interfere with page-level copy events.
-- Uses a Shadow DOM to isolate styles so pages cannot break the UI; works on any site through `<all_urls>` host permission.
+- Uses a Shadow DOM to isolate styles so pages cannot break the UI; works on any site through a content script matched on `<all_urls>`.
 - Manifest V3 service worker keeps defaults; icon assets live under `resources/`.
 
 ## Install (Chrome/Edge)
@@ -45,7 +45,7 @@ Floating edge-panel and popup Chrome/Edge extension for capturing LaTeX formulas
 - `cropIcon.py`: regenerate `resources/icon_{16,32,48,128}.png` from `resources/icon.png` (requires Pillow).
 
 ## Permissions
-Requests `host_permissions: ["<all_urls>"]` to read formula markup on any page, `activeTab` so the toolbar popup can talk to the current tab, `storage` to remember button position/state and copy format, `clipboardWrite` to copy formulas, and `offscreen` to provide a clipboard fallback when page-level copy is blocked.
+Only `storage` (remember button position, copy format and single-line option) and `clipboardWrite` (copy formulas). Formula detection runs in a content script matched on `<all_urls>`; no host permission, `tabs`, `activeTab`, background worker or offscreen document is requested.
 
 
 Some functions don't implement so far. Maybe added in future versions:
