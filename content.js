@@ -912,6 +912,67 @@ const EDITABLE_FIELD_SELECTOR = [
   ".monaco-editor",
   '[data-slate-editor="true"]'
 ].join(",");
+// 页面“外壳”区域：侧边栏、导航、菜单、按钮、输入区。这里的文字（会话标题、菜单项、tooltip）
+// 绝大多数不是公式，只有明确的公式载体（KaTeX/MathJax 等）才允许在其中绑定。
+const CHROME_REGION_SELECTOR = [
+  "nav",
+  "aside",
+  "header",
+  "footer",
+  "button",
+  "a[href]",
+  "summary",
+  "label",
+  '[role="navigation"]',
+  '[role="complementary"]',
+  '[role="menu"]',
+  '[role="menuitem"]',
+  '[role="menubar"]',
+  '[role="tablist"]',
+  '[role="tab"]',
+  '[role="option"]',
+  '[role="listbox"]',
+  '[role="button"]',
+  '[role="toolbar"]',
+  '[role="dialog"]',
+  '[role="tooltip"]',
+  "bard-sidenav",
+  "mat-sidenav",
+  "mat-sidenav-container",
+  "side-navigation-content",
+  "conversations-list",
+  "mat-nav-list",
+  "mat-action-list",
+  "mat-toolbar",
+  "form",
+  '[class*="sidebar" i]',
+  '[class*="sidenav" i]',
+  '[class*="composer" i]',
+  '[id*="sidebar" i]',
+  '[id*="composer" i]',
+  '[data-testid*="sidebar" i]',
+  '[data-testid*="composer" i]',
+  '[data-testid*="history" i]'
+].join(",");
+// 公式正文所在的容器：即使被上面的外壳选择器误伤（例如 <article> 内的 <a>/<label>），也视为内容区。
+const MESSAGE_CONTENT_SELECTOR = [
+  "[data-message-author-role]",
+  ".markdown",
+  ".markdown-body",
+  ".prose",
+  "message-content",
+  "model-response",
+  ".model-response-text",
+  ".response-content",
+  "user-query"
+].join(",");
+const BLOCK_LEVEL_SELECTOR = [
+  "p", "div", "li", "ul", "ol", "table", "pre", "blockquote", "section", "article",
+  "h1", "h2", "h3", "h4", "h5", "h6", "hr", "form", "figure", "details", "message-content"
+].join(",");
+const WEAK_TEXT_ATTRS = new Set(["aria-label", "aria-description", "alt", "title", "data-text", "data-content"]);
+const MAX_BOUND_TEXT_LENGTH = 320;
+const MAX_AGGREGATE_ELEMENT_TEXT_LENGTH = 1500;
 const FORMULA_TEXT_AGGREGATE_SELECTOR = [
   "p",
   "li",
@@ -984,6 +1045,8 @@ function tagFormulasAndBindCopy(options = {}) {
     elementTex.set(record.element, uniqueTexList(list));
   }
 
+  pruneEnclosingFormulaElements(elementTex);
+
   for (const [el, texValues] of elementTex) {
     const tex = texValues.join("\n\n");
 
@@ -1016,6 +1079,24 @@ function tagFormulasAndBindCopy(options = {}) {
     texList,
     elements: Array.from(elementTex.keys())
   };
+}
+
+// 已经有更内层的公式元素被识别时，外层的非公式容器（段落、整条消息…）不应再被标成公式。
+// 外层本身就是公式载体（如 .katex-display 包着 .katex）时保留外层，去掉内层，避免双层描边。
+function pruneEnclosingFormulaElements(elementTex) {
+  const elements = Array.from(elementTex.keys());
+  if (elements.length < 2) return;
+
+  const drop = new Set();
+  for (const outer of elements) {
+    const inner = elements.filter((el) => el !== outer && outer.contains(el));
+    if (!inner.length) continue;
+
+    if (outer.matches?.(FORMULA_CONTAINER_SELECTOR)) inner.forEach((el) => drop.add(el));
+    else drop.add(outer);
+  }
+
+  for (const el of drop) elementTex.delete(el);
 }
 
 function collectFormulaRecords(options = {}) {
@@ -1279,12 +1360,17 @@ function collectFromFormulaAttributes(records, roots = [document], scope = "docu
     if (i >= strongElements.length && i - strongElements.length >= maxScanned) return;
     const el = ordered[i];
     if (isExtensionElement(el)) continue;
-    if (isInEditableField(el)) continue;
+    if (isInEditableField(el) || containsEditableField(el)) continue;
+    const isStrong = i < strongElements.length;
+    // 弱信号元素（普通 title/aria-label 等）出现在侧边栏、菜单、按钮里几乎都是 UI 文案。
+    if (!isStrong && isInChromeRegion(el)) continue;
 
     for (const attrName of attrNames) {
       const raw = el.getAttribute(attrName);
       if (!raw) continue;
       if (raw.length > maxAttrLength) continue;
+      // 通用文案属性只接受明确带 LaTeX 命令/分隔符的内容，避免把标题、tooltip 当公式。
+      if (!isStrong && WEAK_TEXT_ATTRS.has(attrName) && !hasTexSignal(raw)) continue;
 
       const mathMlValues = extractTexFromMathMlString(raw);
       if (mathMlValues.length) {
@@ -1337,6 +1423,7 @@ function collectFromDelimitedText(records, roots = [document.body], scope = "doc
       if (parent.closest("script, style, textarea, input, select, option, noscript")) continue;
       if (isInEditableField(parent)) continue;
       if (parent.closest(FORMULA_CONTAINER_SELECTOR)) continue;
+      if (isInChromeRegion(parent)) continue;
       if (!isElementVisible(parent)) continue;
 
       textNodes.push(node);
@@ -1383,8 +1470,13 @@ function collectFromDelimitedText(records, roots = [document.body], scope = "doc
     if (aggregateSeen.has(el)) return;
     if (!isElementNearViewport(el, getViewportScanMargin())) return;
 
+    // 聚合扫描只为“分隔符跨越行内元素”的情况（如 $a<em>b</em>$）服务，
+    // 所以只接受内部没有块级子元素的小型行内容器；否则会把整段回复/整个输入区当成一个公式。
+    if (isInChromeRegion(el) || containsEditableField(el) || hasBlockDescendant(el)) return;
+    if (el.querySelector?.(STRONG_FORMULA_SELECTOR)) return;
+    if (!el.children.length) return; // 纯文本节点已由 text node 扫描处理
     const text = el.textContent || "";
-    if (text.length < 4 || text.length > MAX_VIEWPORT_AGGREGATE_TEXT_LENGTH) return;
+    if (text.length < 4 || text.length > MAX_AGGREGATE_ELEMENT_TEXT_LENGTH) return;
     if (!maybeContainsLatex(text)) return;
 
     aggregateSeen.add(el);
@@ -1571,7 +1663,10 @@ function normalizeFormulaElement(element) {
   if (isExtensionElement(element)) return null;
   if (element === document.body || element === document.documentElement) return null;
   if (isInEditableField(element)) return null;
-  return findFormulaElementFor(element) || element;
+  const target = findFormulaElementFor(element) || element;
+  if (target === document.body || target === document.documentElement) return null;
+  if (isInEditableField(target) || containsEditableField(target)) return null;
+  return target;
 }
 
 function findFormulaElementFor(node) {
@@ -2165,6 +2260,12 @@ function getStableElementKey(el) {
   return el.getAttribute(FORMULA_ID_ATTR);
 }
 
+// 文本里是否带有 LaTeX 信号：分隔符、\command，或 ^ _ 与 {} 组合。
+function hasTexSignal(text) {
+  const value = String(text || "");
+  return maybeContainsLatex(value) || /[A-Za-z0-9)}\]][_^][{A-Za-z0-9(\\]/.test(value);
+}
+
 function maybeContainsLatex(text) {
   return /\\[()[\]]|\${1,2}|\\[a-zA-Z]+/.test(String(text || ""));
 }
@@ -2202,7 +2303,7 @@ function isLikelyTex(value, source) {
   // 不再强制要求 "latex:" 之类的前缀。
   // 但 title="2024" 这类普通 UI 文本很常见，所以裸数字/单字母只在 data-* 属性里才算公式。
   if (source === "aria-label" || source === "aria-description" || source === "alt" || source === "title") {
-    return looksLikeMathExpression(tex) || containsNonAsciiButNotCjk(tex);
+    return looksLikeMathExpression(tex);
   }
 
   return /\\/.test(tex) && /[A-Za-z]/.test(tex);
@@ -2259,9 +2360,19 @@ function isTexEncoding(value) {
 function shouldBindTextFormula(parent, rawText, values) {
   if (!parent || values.length > 4) return false;
 
+  if (isInChromeRegion(parent) || containsEditableField(parent)) return false;
+  if (hasBlockDescendant(parent) && parent.querySelector(STRONG_FORMULA_SELECTOR)) return false;
+
   const text = normalizeTex(parent.textContent || rawText);
   if (text.length > 600) return false;
   if (text.length > normalizeTex(rawText).length + 120) return false;
+
+  // 长段落里夹着一两个行内 $…$：整段高亮会让人以为整段是公式，只在列表里保留，不绑定元素。
+  // 公式占了容器主体（如单独成行的 $$…$$）时才绑定。
+  if (text.length > MAX_BOUND_TEXT_LENGTH) {
+    const formulaChars = values.reduce((sum, tex) => sum + tex.length, 0);
+    if (formulaChars < text.length * 0.5) return false;
+  }
 
   return true;
 }
@@ -2286,6 +2397,33 @@ function isInEditableField(el) {
   }
 
   return false;
+}
+
+// 元素内部是否包含输入框/编辑器（例如 ChatGPT 的输入区外层 div）。
+// 这种外层容器的 textContent 含有用户正在输入的内容，不能当成公式载体。
+function containsEditableField(el) {
+  if (!el?.querySelector) return false;
+  try {
+    if (el.querySelector(EDITABLE_FIELD_SELECTOR)) return true;
+    return Boolean(el.querySelector('[contenteditable]:not([contenteditable="false" i])'));
+  } catch {
+    return false;
+  }
+}
+
+// 元素是否位于页面外壳（侧边栏/导航/菜单/输入区）内，且不在消息正文中。
+function isInChromeRegion(el) {
+  if (!el?.closest) return false;
+  const chrome = el.closest(CHROME_REGION_SELECTOR);
+  if (!chrome) return false;
+  const content = el.closest(MESSAGE_CONTENT_SELECTOR);
+  // 消息正文在外壳元素之内（如 <form>/<a> 包住内容）时，以更内层者为准。
+  if (content && chrome.contains(content)) return false;
+  return true;
+}
+
+function hasBlockDescendant(el) {
+  return Boolean(el?.querySelector?.(BLOCK_LEVEL_SELECTOR));
 }
 
 function isNodeInEditableField(node) {
