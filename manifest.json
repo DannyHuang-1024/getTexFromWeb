@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "getTexFormula",
-  "version": "2.4.1",
+  "version": "2.4.2",
   "description": "Capture and copy LaTeX formulas from rendered math on web pages.",
   "action": {
     "default_popup": "panel.html",

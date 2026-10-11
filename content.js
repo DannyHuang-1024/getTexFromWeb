@@ -966,6 +966,20 @@ const MESSAGE_CONTENT_SELECTOR = [
   ".response-content",
   "user-query"
 ].join(",");
+// 用户自己发出的消息气泡：里面是用户键入的原始文本（可能带 $…$、\\frac 等标记），浏览器并不会渲染，
+// 不应当作公式识别。
+const USER_MESSAGE_SELECTOR = [
+  '[data-message-author-role="user" i]',
+  '[data-testid="user-message"]',
+  '[data-testid*="user-message" i]',
+  "user-query",
+  "user-query-content",
+  ".user-query-container",
+  ".user-query-bubble-with-background",
+  ".query-text",
+  '[class*="user-message" i]',
+  '[class*="human-message" i]'
+].join(",");
 const BLOCK_LEVEL_SELECTOR = [
   "p", "div", "li", "ul", "ol", "table", "pre", "blockquote", "section", "article",
   "h1", "h2", "h3", "h4", "h5", "h6", "hr", "form", "figure", "details", "message-content"
@@ -1423,7 +1437,7 @@ function collectFromDelimitedText(records, roots = [document.body], scope = "doc
       if (parent.closest("script, style, textarea, input, select, option, noscript")) continue;
       if (isInEditableField(parent)) continue;
       if (parent.closest(FORMULA_CONTAINER_SELECTOR)) continue;
-      if (isInChromeRegion(parent)) continue;
+      if (isInChromeRegion(parent) || isInUserMessage(parent)) continue;
       if (!isElementVisible(parent)) continue;
 
       textNodes.push(node);
@@ -1472,7 +1486,7 @@ function collectFromDelimitedText(records, roots = [document.body], scope = "doc
 
     // 聚合扫描只为“分隔符跨越行内元素”的情况（如 $a<em>b</em>$）服务，
     // 所以只接受内部没有块级子元素的小型行内容器；否则会把整段回复/整个输入区当成一个公式。
-    if (isInChromeRegion(el) || containsEditableField(el) || hasBlockDescendant(el)) return;
+    if (isInChromeRegion(el) || isInUserMessage(el) || containsEditableField(el) || hasBlockDescendant(el)) return;
     if (el.querySelector?.(STRONG_FORMULA_SELECTOR)) return;
     if (!el.children.length) return; // 纯文本节点已由 text node 扫描处理
     const text = el.textContent || "";
@@ -1644,6 +1658,7 @@ function queryWithin(root, selector) {
 function addFormulaRecord(records, element, rawTex, source, bindable = true, sourceNode = null, scope = "document") {
   const tex = normalizeTex(stripLatexLabel(rawTex || ""));
   if (!tex || !isLikelyTex(tex, source)) return;
+  if (isInUserMessage(element) || isInUserMessage(sourceNode)) return;
 
   const target = normalizeFormulaElement(element);
   const distance = scope === "viewport" ? getFormulaViewportDistance(target, sourceNode, source) : 0;
@@ -2420,6 +2435,11 @@ function isInChromeRegion(el) {
   // 消息正文在外壳元素之内（如 <form>/<a> 包住内容）时，以更内层者为准。
   if (content && chrome.contains(content)) return false;
   return true;
+}
+
+function isInUserMessage(node) {
+  const el = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+  return Boolean(el?.closest?.(USER_MESSAGE_SELECTOR));
 }
 
 function hasBlockDescendant(el) {
