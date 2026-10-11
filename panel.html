@@ -21,6 +21,7 @@
       <div class="actions">
         <button id="btnFlash" class="btn primary">Quick Scan</button>
         <button id="btnContinuous" class="btn">Continuous: Off</button>
+        <button id="btnClear" class="btn" title="Remove all formula highlights on the page">Clear</button>
       </div>
 
       <div class="formatBox">
@@ -33,6 +34,10 @@
           <option value="inline-paren">\( LaTeX \)</option>
           <option value="equation">equation environment</option>
         </select>
+        <label class="check">
+          <input id="copySingleLine" type="checkbox" checked />
+          <span>Single line (remove line breaks)</span>
+        </label>
       </div>
 
       <div id="status" class="status">Run a scan, then expand results to copy.</div>

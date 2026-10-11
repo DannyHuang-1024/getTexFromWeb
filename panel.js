@@ -1,5 +1,7 @@
 const COPY_FORMAT_STORAGE_KEY = "latexCopyFormat";
 const COPY_FORMAT_DEFAULT = "bare";
+const COPY_SINGLE_LINE_STORAGE_KEY = "latexCopySingleLine";
+const COPY_SINGLE_LINE_DEFAULT = true;
 const COPY_FORMAT_IDS = new Set([
   "bare",
   "inline-dollar",
@@ -15,6 +17,8 @@ const pageUrl = document.getElementById("pageUrl");
 const btnFlash = document.getElementById("btnFlash");
 const btnContinuous = document.getElementById("btnContinuous");
 const btnClose = document.getElementById("btnClose");
+const btnClear = document.getElementById("btnClear");
+const singleLineEl = document.getElementById("copySingleLine");
 const copyFormatEl = document.getElementById("copyFormat");
 const statusEl = document.getElementById("status");
 
@@ -27,6 +31,7 @@ const isPopup = window.parent === window;
 
 let lastTexList = [];
 let currentCopyFormat = COPY_FORMAT_DEFAULT;
+let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
 let sizeReportRaf = 0;
 
 init();
@@ -51,6 +56,15 @@ function bindEvents() {
   btnFlash?.addEventListener("click", () => sendAction("FLASH_FORMULAS"));
   btnContinuous?.addEventListener("click", () => sendAction("TOGGLE_CONTINUOUS_SCAN"));
   btnClose?.addEventListener("click", () => sendAction("CLOSE_PANEL"));
+  btnClear?.addEventListener("click", async () => {
+    const res = await sendAction("CLEAR_HIGHLIGHTS");
+    if (res === undefined || res?.ok) setStatus("Highlights cleared.");
+  });
+  singleLineEl?.addEventListener("change", () => {
+    currentCopySingleLine = singleLineEl.checked;
+    chrome.storage?.local?.set?.({ [COPY_SINGLE_LINE_STORAGE_KEY]: currentCopySingleLine });
+    setStatus(currentCopySingleLine ? "Copy as a single line." : "Keep original line breaks.");
+  });
   btnCopyAll?.addEventListener("click", () => copyFormulaList(lastTexList));
 
   copyFormatEl?.addEventListener("change", () => {
@@ -60,21 +74,40 @@ function bindEvents() {
   });
 
   chrome.storage?.onChanged?.addListener?.((changes, areaName) => {
-    if (areaName !== "local" || !changes[COPY_FORMAT_STORAGE_KEY]) return;
-    setCopyFormat(changes[COPY_FORMAT_STORAGE_KEY].newValue);
+    if (areaName !== "local") return;
+    if (changes[COPY_FORMAT_STORAGE_KEY]) setCopyFormat(changes[COPY_FORMAT_STORAGE_KEY].newValue);
+    if (changes[COPY_SINGLE_LINE_STORAGE_KEY]) setCopySingleLine(changes[COPY_SINGLE_LINE_STORAGE_KEY].newValue);
   });
 }
 
 function loadCopyFormat() {
-  chrome.storage?.local?.get?.({ [COPY_FORMAT_STORAGE_KEY]: COPY_FORMAT_DEFAULT }, (res) => {
+  chrome.storage?.local?.get?.({
+    [COPY_FORMAT_STORAGE_KEY]: COPY_FORMAT_DEFAULT,
+    [COPY_SINGLE_LINE_STORAGE_KEY]: COPY_SINGLE_LINE_DEFAULT
+  }, (res) => {
     if (chrome.runtime?.lastError) return;
     setCopyFormat(res?.[COPY_FORMAT_STORAGE_KEY]);
+    setCopySingleLine(res?.[COPY_SINGLE_LINE_STORAGE_KEY]);
   });
 }
 
 function setCopyFormat(format) {
   currentCopyFormat = normalizeCopyFormatId(format);
   if (copyFormatEl) copyFormatEl.value = currentCopyFormat;
+}
+
+function setCopySingleLine(value) {
+  currentCopySingleLine = value !== false;
+  if (singleLineEl) singleLineEl.checked = currentCopySingleLine;
+}
+
+// 把单个公式内部的换行压成空格，得到单行文本；多个公式之间的空行分隔保持不变。
+function collapseTexToSingleLine(tex) {
+  return String(tex || "")
+    .split(/\n{2,}/)
+    .map((part) => part.replace(/\s*\n\s*/g, " ").trim())
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function normalizeCopyFormatId(format) {
@@ -237,7 +270,7 @@ async function copyFormulaList(texList) {
 }
 
 function formatFormulaText(tex, format) {
-  const value = String(tex || "");
+  const value = currentCopySingleLine ? collapseTexToSingleLine(tex) : String(tex || "");
   const normalizedFormat = normalizeCopyFormatId(format);
 
   if (!value) return "";

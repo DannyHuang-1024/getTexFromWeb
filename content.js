@@ -9,6 +9,9 @@ const COPY_FORMAT_IDS = new Set([
   "equation"
 ]);
 let currentCopyFormat = COPY_FORMAT_DEFAULT;
+const COPY_SINGLE_LINE_STORAGE_KEY = "latexCopySingleLine";
+const COPY_SINGLE_LINE_DEFAULT = true;
+let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
 
 (() => {
   // 立即执行函数：把所有变量收进局部作用域，避免污染页面全局。
@@ -27,8 +30,13 @@ let currentCopyFormat = COPY_FORMAT_DEFAULT;
 
   syncCopyFormatSetting();
   chrome.storage?.onChanged?.addListener?.((changes, areaName) => {
-    if (areaName !== "local" || !changes[COPY_FORMAT_STORAGE_KEY]) return;
-    currentCopyFormat = normalizeCopyFormatId(changes[COPY_FORMAT_STORAGE_KEY].newValue);
+    if (areaName !== "local") return;
+    if (changes[COPY_FORMAT_STORAGE_KEY]) {
+      currentCopyFormat = normalizeCopyFormatId(changes[COPY_FORMAT_STORAGE_KEY].newValue);
+    }
+    if (changes[COPY_SINGLE_LINE_STORAGE_KEY]) {
+      currentCopySingleLine = changes[COPY_SINGLE_LINE_STORAGE_KEY].newValue !== false;
+    }
   });
 
   // 创建 Shadow DOM 宿主容器，用于隔离样式，避免被页面 CSS 干扰。
@@ -391,6 +399,13 @@ let currentCopyFormat = COPY_FORMAT_DEFAULT;
       if (action === "TOGGLE_CONTINUOUS_SCAN") {
         const result = toggleContinuousScan();
         return { ...getPanelState(), ...result };
+      }
+
+      if (action === "CLEAR_HIGHLIGHTS") {
+        stopFormulaObserver();
+        clearAllFormulaTags();
+        toast("Formula highlights cleared");
+        return { ...getPanelState(), cleared: true };
       }
 
       if (action === "CLOSE_PANEL") {
@@ -1018,7 +1033,7 @@ function ensureFormulaStyle() {
   style.id = STYLE_ID;
   style.textContent = `
     .ext-formula-hover {
-      cursor: copy !important;
+      cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'%3E%3Ccircle cx='7' cy='7' r='6' fill='white' stroke='black' stroke-width='1.2'/%3E%3Cpath d='M7 4v6M4 7h6' stroke='black' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E") 7 7, copy !important;
       border-radius: 4px;
     }
     .ext-formula-hover:hover {
@@ -2559,6 +2574,10 @@ function cleanupStaleFormulaTags(activeElementTex) {
   });
 }
 
+function clearAllFormulaTags() {
+  document.querySelectorAll(".ext-formula-hover, [" + FORMULA_TEX_ATTR + "]").forEach(clearFormulaTag);
+}
+
 function clearFormulaTag(el) {
   el.classList.remove("ext-formula-hover", "ext-formula-flash", "__edge_fab_flash__");
   el.removeAttribute(FORMULA_TEX_ATTR);
@@ -2607,9 +2626,13 @@ function syncCopyFormatSetting() {
   if (!chrome.storage?.local?.get) return;
 
   try {
-    chrome.storage.local.get({ [COPY_FORMAT_STORAGE_KEY]: COPY_FORMAT_DEFAULT }, (res) => {
+    chrome.storage.local.get({
+      [COPY_FORMAT_STORAGE_KEY]: COPY_FORMAT_DEFAULT,
+      [COPY_SINGLE_LINE_STORAGE_KEY]: COPY_SINGLE_LINE_DEFAULT
+    }, (res) => {
       if (chrome.runtime?.lastError) return;
       currentCopyFormat = normalizeCopyFormatId(res?.[COPY_FORMAT_STORAGE_KEY]);
+      currentCopySingleLine = res?.[COPY_SINGLE_LINE_STORAGE_KEY] !== false;
     });
   } catch {
     currentCopyFormat = COPY_FORMAT_DEFAULT;
@@ -2620,12 +2643,21 @@ function copyFormulaTextToClipboard(tex) {
   return copyTextToClipboard(formatFormulaText(tex, currentCopyFormat));
 }
 
+// 把单个公式内部的换行压成空格，得到单行文本；多个公式之间的空行分隔保持不变。
+function collapseTexToSingleLine(tex) {
+  return String(tex || "")
+    .split(/\n{2,}/)
+    .map((part) => part.replace(/\s*\n\s*/g, " ").trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 function normalizeCopyFormatId(format) {
   return COPY_FORMAT_IDS.has(format) ? format : COPY_FORMAT_DEFAULT;
 }
 
 function formatFormulaText(tex, format) {
-  const value = String(tex || "");
+  const value = currentCopySingleLine ? collapseTexToSingleLine(tex) : String(tex || "");
   const normalizedFormat = normalizeCopyFormatId(format);
 
   if (!value) return "";
