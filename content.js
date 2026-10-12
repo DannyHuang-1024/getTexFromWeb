@@ -202,6 +202,11 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
         pointer-events: none;
       }
       .ef-btn[data-tip]:hover .ef-tip{ opacity: 1; }
+      /* 悬浮球贴右边时，提示气泡朝左出，否则会被屏幕边缘裁掉 */
+      .ef-wrap[data-side="right"] .ef-tip{
+        left: auto;
+        right: calc(100% + 8px);
+      }
 
       /* hover 保护区：防止鼠标移向小按钮时触发隐藏 */
       .ef-hoverpad{
@@ -232,6 +237,7 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
         position: fixed;
         top: 18vh;
         width: 340px;
+        max-width: calc(100vw - ${FAB_SIZE + EDGE_MARGIN + 24}px);
         height: 260px;
         min-height: 0;
         max-height: min(78vh, 560px);
@@ -250,6 +256,11 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
         pointer-events: auto;
       }
       .ef-panel iframe{ width:100%; height:100%; border:0; display:block; }
+
+      @media (prefers-reduced-motion: reduce){
+        .ef-wrap, .ef-fab, .ef-mini, .ef-panel, .ef-tip{ transition: none !important; }
+        .ef-wrap:hover .ef-fab, .ef-wrap[data-pinned="1"] .ef-fab{ animation: none !important; }
+      }
     `;
 
     // 创建外层容器，并设置当前状态。
@@ -670,7 +681,10 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
         });
       });
 
-    fab.addEventListener("pointerup", () => {
+    fab.addEventListener("pointerup", endDrag);
+    fab.addEventListener("pointercancel", endDrag);
+
+    function endDrag() {
       if (!dragging) return;
       dragging = false;
 
@@ -689,7 +703,7 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
 
       // 松手后恢复半隐藏。
       wrap.dataset.collapsed = "1";
-    });
+    }
 
     // 监听窗口尺寸变化，避免组件位置超出可视区域。
     window.addEventListener("resize", () => {
@@ -697,6 +711,7 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
       const fixedTop = clamp(rect.top, TOP_MARGIN, window.innerHeight - FAB_SIZE - BOTTOM_MARGIN);
       wrap.style.top = `${fixedTop}px`;
       updateMenuDir();
+      if (panel.dataset.show === "1") positionPanelNearFab(panel, wrap);
       chrome.storage?.local?.set?.({ edgeFabState: { side: wrap.dataset.side, top: Math.round(fixedTop) } });
     });
 
@@ -848,7 +863,9 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
         el.style.opacity = "1";        // 淡入。
         el.style.transform = "translateY(0)";
       });
-      setTimeout(() => {
+      // 连续触发时要取消上一次的淡出计时，否则新提示会被旧计时提前隐藏。
+      clearTimeout(el.__hideTimer);
+      el.__hideTimer = setTimeout(() => {
         el.style.opacity = "0";        // 淡出。
         el.style.transform = "translateY(6px)";
       }, 1200);
@@ -2778,7 +2795,9 @@ function positionPanelNearFab(panel, wrap) {
   const pr = panel.getBoundingClientRect();
   const wr = wrap.getBoundingClientRect();
 
-  const panelH = pr.height || 260;
+  // 高度有 160ms 过渡，刚改 style.height 时 getBoundingClientRect 还是旧值，
+  // 会导致面板长高后超出视口底部。所以优先用目标高度。
+  const panelH = parseFloat(panel.style.height) || pr.height || 260;
 
   // 目标：面板垂直中心对齐浮标中心，并夹紧到视口内（以视口坐标计算）。
   let top = (wr.top + wr.height / 2) - panelH / 2;
