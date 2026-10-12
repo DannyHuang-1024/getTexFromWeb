@@ -34,7 +34,8 @@ Floating edge-panel and popup Chrome/Edge extension for capturing LaTeX formulas
    - `Open panel`: opens the floating panel with the same controls as the toolbar popup.
    - `Copy format`: chooses how individual formulas and Copy All are wrapped before copying.
    - `Results`: lists captured TeX; click a row to copy it or use **Copy All**.
-   - `Collapse`: hides the mini menu (it also auto-collapses when the cursor leaves unless pinned open).
+   - `Clear`: removes all highlights, stops continuous scanning, and empties the results list. The floating menu auto-collapses when the cursor leaves unless pinned open.
+   - `Single line`: removes line breaks inside a formula when copying (on by default).
 4) Click any highlighted formula in the page to copy its TeX directly; use the panel when you need the full list.
 
 ## Files of note

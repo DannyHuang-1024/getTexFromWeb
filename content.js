@@ -311,10 +311,10 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
     mini.append(
       scanOnceBtn,
       continuousScanBtn,
+      miniBtn("Clear highlights", "🧹", () => clearFormulas()),
       miniBtn("Open panel", "resources/panel.svg", () => {
         togglePanel(true);
-      }),
-      miniBtn("Collapse", "×", () => { wrap.dataset.open = "0"; togglePanel(false); if (wrap.dataset.pinned !== "1") collapse(); })
+      })
     );
 
     // 可选面板：通过 iframe 加载扩展内部页面。
@@ -397,6 +397,22 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
       return { continuous: true, stats };
     }
 
+    // 清除页面高亮、停止持续扫描，并清空结果列表。悬浮按钮和面板的 Clear 共用。
+    function clearFormulas() {
+      const hadTags = document.querySelector(".ext-formula-hover, [" + FORMULA_TEX_ATTR + "]") !== null;
+      if (!hadTags && !lastTexList.length) {
+        toast("No formulas yet. Run a scan first.");
+        return false;
+      }
+
+      stopFormulaObserver();
+      clearAllFormulaTags();
+      lastTexList = [];
+      sendTexList();
+      toast("Highlights and results cleared");
+      return true;
+    }
+
     function handlePanelAction(action) {
       if (action === "GET_STATE") {
         return getPanelState();
@@ -413,10 +429,8 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
       }
 
       if (action === "CLEAR_HIGHLIGHTS") {
-        stopFormulaObserver();
-        clearAllFormulaTags();
-        toast("Formula highlights cleared");
-        return { ...getPanelState(), cleared: true };
+        const cleared = clearFormulas();
+        return { ...getPanelState(), cleared };
       }
 
       if (action === "CLOSE_PANEL") {
