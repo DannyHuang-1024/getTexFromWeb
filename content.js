@@ -313,6 +313,8 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
     hoverPad.className = "ef-hoverpad";
 
     let lastTexList = [];
+    // tex -> 所在节点：持续扫描会不断累积公式，靠节点位置才能把新旧公式合并成页面顺序。
+    let texEntries = new Map();
     let formulaObserver = null;
     let continuousScanBtn = null;
 
@@ -321,7 +323,7 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
     mini.className = "ef-mini";
     const scanOnceBtn = miniBtn("Scan formulas once", "✨", () => {
       const stats = scanFormulas({ flash: true, includeText: true });
-      toast(`Scan complete: found ${stats.total} formulas, newly tagged ${stats.newlyTagged}.`);
+      toast(scanSummary(stats));
     });
     continuousScanBtn = miniBtn("Enable continuous scan", "↻", () => {
       if (formulaObserver) {
@@ -332,7 +334,7 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
 
       const stats = scanFormulas({ flash: false, includeText: true });
       startFormulaObserver();
-      toast(`Continuous LaTeX scanning enabled. Found ${stats.total} formulas.`);
+      toast(`Continuous scanning on. ${scanSummary(stats)}`);
     });
     mini.append(
       scanOnceBtn,
@@ -432,7 +434,7 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
 
       const stats = scanFormulas({ flash: false, includeText: true });
       startFormulaObserver();
-      toast(`Continuous LaTeX scanning enabled. Found ${stats.total} formulas.`);
+      toast(`Continuous scanning on. ${scanSummary(stats)}`);
       return { continuous: true, stats };
     }
 
@@ -448,6 +450,7 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
       stopFormulaObserver();
       clearAllFormulaTags();
       lastTexList = [];
+      texEntries = new Map();
       sendTexList();
       toast("Highlights and results cleared");
       sendPanelStatus("Highlights and results cleared.");
@@ -498,7 +501,11 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
         scope,
         onCopy: (ok) => toast(ok ? "Copied LaTeX" : "Copy failed. Please copy from the panel.")
       });
-      lastTexList = cleanup ? stats.texList : uniqueTexList([...stats.texList, ...lastTexList]);
+      const previous = new Set(lastTexList.map((tex) => tex.replace(/\s+/g, " ")));
+      if (cleanup) texEntries = new Map();
+      for (const entry of stats.entries) texEntries.set(entry.tex.replace(/\s+/g, " "), entry);
+      lastTexList = orderTexEntries(texEntries);
+      stats.added = lastTexList.filter((tex) => !previous.has(tex.replace(/\s+/g, " "))).length;
       stats.texList = lastTexList;
       stats.total = lastTexList.length;
       sendTexList();
@@ -857,35 +864,18 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
       }
     }
 
-    // 高亮页面中的公式元素。
+    // 扫描结果提示：重复扫描时不再出现 "newly tagged 0" 这种像失败一样的字样。
+    function scanSummary(stats) {
+      if (!stats.total) return "No formulas found";
+      const noun = stats.total === 1 ? "formula" : "formulas";
+      const extra = stats.added > 0 && stats.added < stats.total ? ` (+${stats.added} new)` : "";
+      return `Found ${stats.total} ${noun}${extra}`;
+    }
+
+    // 扫描并闪一下高亮（闪烁动画由 tagFormulasAndBindCopy 统一负责）。
     function flashFormulas(options = {}) {
       const stats = scanFormulas({ flash: true, includeText: Boolean(options.includeText) });
-      const nodes = stats.elements;
-      if (!nodes.length) {
-        toast("No formula elements found");
-        return stats;
-      }
-
-      const STYLE_ID = "__edge_fab_flash_style__";
-      if (!document.getElementById(STYLE_ID)) {
-        const s = document.createElement("style");
-        s.id = STYLE_ID;
-        s.textContent = `
-          @keyframes __edgeFabFlash {
-            0%   { outline: 2px solid rgba(0, 180, 0, 1); }
-            100% { outline: 2px solid rgba(0, 180, 0, 0); }
-          }
-          .__edge_fab_flash__ { animation: __edgeFabFlash 900ms ease-out; }
-        `;
-        document.documentElement.appendChild(s);
-      }
-      nodes.forEach((el) => {
-        el.classList.remove("__edge_fab_flash__"); // 清理旧动画类。
-        void el.offsetWidth;                        // 强制回流，确保动画重新触发。
-        el.classList.add("__edge_fab_flash__");    // 加入动画类。
-        setTimeout(() => el.classList.remove("__edge_fab_flash__"), 950); // 动画结束后移除。
-      });
-      toast(`Tagged ${stats.total} formulas`);
+      toast(scanSummary(stats));
       return stats;
     }
 
@@ -1111,9 +1101,11 @@ function ensureFormulaStyle() {
       cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'%3E%3Ccircle cx='7' cy='7' r='6' fill='white' stroke='black' stroke-width='1.2'/%3E%3Cpath d='M7 4v6M4 7h6' stroke='black' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E") 7 7, copy !important;
       border-radius: 4px;
     }
+    /* 白色内芯 + 蓝色细环：任何底色（浅色/深色页面）上都至少有一层能看清，是常见的焦点环做法。 */
     .ext-formula-hover:hover {
-      outline: 2px solid #000 !important;
-      outline-offset: 2px !important;
+      outline: 1px solid #1a73e8 !important;
+      outline-offset: 1px !important;
+      box-shadow: 0 0 0 1px #fff !important;
     }
 
     .ext-formula-flash { animation: extFormulaFlash 1s ease-out forwards; }
@@ -1133,9 +1125,27 @@ function tagKatexAndBindCopy(options = {}) {
   return tagFormulasAndBindCopy(options);
 }
 
+// 按页面从上到下的顺序比较两个节点；无法比较（不同树/已脱离文档）时视为相等。
+function compareFormulaNodes(a, b) {
+  if (!a || !b || a === b) return 0;
+  const pos = a.compareDocumentPosition(b);
+  if (pos & Node.DOCUMENT_POSITION_DISCONNECTED) return 0;
+  if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+  if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+  return 0;
+}
+
+function sortRecordsByPagePosition(records) {
+  return records.slice().sort((x, y) => {
+    const byPage = compareFormulaNodes(x.node, y.node);
+    return byPage || (x.seq ?? 0) - (y.seq ?? 0);
+  });
+}
+
 function tagFormulasAndBindCopy(options = {}) {
   const { flash = true, includeText = true, cleanup = true, scope = "viewport", onCopy } = options;
-  const records = collectFormulaRecords({ includeText, scope });
+  // 收集阶段按优先级挑选公式；展示和复制时则按页面顺序排列，列表才和阅读顺序一致。
+  const records = sortRecordsByPagePosition(collectFormulaRecords({ includeText, scope }));
   const texList = uniqueTexList(records.map((record) => record.tex));
   const elementTex = new Map();
   let newlyTagged = 0;
@@ -1185,12 +1195,21 @@ function tagFormulasAndBindCopy(options = {}) {
     total: texList.length,
     newlyTagged,
     texList,
+    entries: records.map((record) => ({ tex: record.tex, node: record.node })),
     elements: Array.from(elementTex.keys())
   };
 }
 
 // 已经有更内层的公式元素被识别时，外层的非公式容器（段落、整条消息…）不应再被标成公式。
 // 外层本身就是公式载体（如 .katex-display 包着 .katex）时保留外层，去掉内层，避免双层描边。
+// 把累积的 (tex -> 节点) 排成页面顺序；节点已不在文档里的（被虚拟列表回收）排在最后。
+function orderTexEntries(entries) {
+  const all = Array.from(entries.values());
+  const live = all.filter((e) => e.node?.isConnected).sort((x, y) => compareFormulaNodes(x.node, y.node));
+  const gone = all.filter((e) => !e.node?.isConnected);
+  return uniqueTexList([...live, ...gone].map((e) => e.tex));
+}
+
 function pruneEnclosingFormulaElements(elementTex) {
   const elements = Array.from(elementTex.keys());
   if (elements.length < 2) return;
@@ -1474,7 +1493,12 @@ function collectFromFormulaAttributes(records, roots = [document], scope = "docu
     if (!isStrong && isInChromeRegion(el)) continue;
 
     for (const attrName of attrNames) {
-      const raw = el.getAttribute(attrName);
+      let raw = el.getAttribute(attrName);
+      // 已标记的元素，title 是扩展自己写进去的公式文本；读它会把自己的输出再当成新公式。
+      // 这时只看页面原本的 title（若有）。
+      if (attrName === "title" && el.hasAttribute(FORMULA_TEX_ATTR)) {
+        raw = el.getAttribute(FORMULA_ORIGINAL_TITLE_ATTR);
+      }
       if (!raw) continue;
       if (raw.length > maxAttrLength) continue;
       // 通用文案属性只接受明确带 LaTeX 命令/分隔符的内容，避免把标题、tooltip 当公式。
@@ -1749,8 +1773,10 @@ function queryWithin(root, selector) {
   return out;
 }
 
+let formulaRecordSeq = 0;
+
 function addFormulaRecord(records, element, rawTex, source, bindable = true, sourceNode = null, scope = "document") {
-  const tex = normalizeTex(stripLatexLabel(rawTex || ""));
+  const tex = normalizeUnicodeTexSymbols(normalizeTex(stripLatexLabel(rawTex || "")), source);
   if (!tex || !isLikelyTex(tex, source)) return;
   if (isInUserMessage(element) || isInUserMessage(sourceNode)) return;
 
@@ -1759,6 +1785,8 @@ function addFormulaRecord(records, element, rawTex, source, bindable = true, sou
   if (scope === "viewport" && distance === Number.POSITIVE_INFINITY) return;
   records.push({
     element: target,
+    node: sourceNode || target,
+    seq: formulaRecordSeq++,
     tex,
     source,
     bindable: Boolean(bindable && target),
@@ -2159,11 +2187,16 @@ function extractTexCandidatesFromText(text, source = "text-delimiter") {
       /(^|[^$\\])\$((?:\\.|[^$\n]){1,2000}?)\$/g
     ];
 
+    // 不同分隔符的匹配要按它们在文本里出现的先后排序，否则同一段里 \(…\) 会排到 $…$ 前面。
+    const matches = [];
     for (const pattern of patterns) {
-      for (const match of value.matchAll(pattern)) {
-        const tex = normalizeTex(match[2] ?? match[1]);
-        if (tex && isLikelyTex(tex, "delimited-formula")) results.push(tex);
-      }
+      for (const match of value.matchAll(pattern)) matches.push(match);
+    }
+    matches.sort((a, b) => a.index - b.index);
+
+    for (const match of matches) {
+      const tex = normalizeTex(match[2] ?? match[1]);
+      if (tex && isLikelyTex(tex, "delimited-formula")) results.push(tex);
     }
 
     const direct = normalizeTex(value);
@@ -2204,6 +2237,43 @@ function stripLatexLabel(value) {
   return String(value || "")
     .replace(/^\s*(?:latex|tex|math|formula)\s*[:：]\s*/i, "")
     .trim();
+}
+
+// 页面上没有 TeX 源码、靠渲染结果反推时，会带出 Unicode 数学符号（如 U+2212 的减号 −）。
+// 这些符号在 pdflatex 里会报错，统一换成对应的 TeX 命令。
+// 作者自己写的 TeX（annotation / math/tex 脚本）原样保留；\text{...} 里的文字也不动。
+function normalizeUnicodeTexSymbols(tex, source) {
+  if (source === "annotation" || source === "mathjax-script") return tex;
+  if (!/[^\x00-\x7f]/.test(tex)) return tex;
+
+  return tex
+    .split(/(\\(?:text|mathrm|operatorname|mbox)\{[^{}]*\})/)
+    .map((part, index) => (index % 2 ? part : mapUnicodeMathChars(part)))
+    .join("");
+}
+
+function mapUnicodeMathChars(text) {
+  const chars = Array.from(text);
+  let out = "";
+
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i];
+    if (ch === "\u2013" || ch === "\u2212") {
+      out += "-";
+      continue;
+    }
+
+    const cmd = MATHML_OPERATOR_TEX[ch] ?? MATHML_IDENTIFIER_TEX[ch];
+    if (!cmd) {
+      out += ch;
+      continue;
+    }
+
+    // \times 后面直接跟字母会变成 \timesb，需要补一个空格。
+    out += /^\\[A-Za-z]+$/.test(cmd) && /[A-Za-z]/.test(chars[i + 1] || "") ? `${cmd} ` : cmd;
+  }
+
+  return out;
 }
 
 function normalizeTex(value) {

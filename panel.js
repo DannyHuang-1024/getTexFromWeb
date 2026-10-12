@@ -248,7 +248,10 @@ function renderState(state) {
   renderTexList(Array.isArray(state.texList) ? state.texList : []);
   renderScanState(Boolean(state.continuous));
   if (state.stats) {
-    setStatus(`Scan complete: ${state.stats.total || 0} formulas, ${state.stats.newlyTagged || 0} newly tagged.`);
+    const total = state.stats.total || 0;
+    const added = state.stats.added || 0;
+    const extra = added > 0 && added < total ? ` (+${added} new)` : "";
+    setStatus(total ? `Found ${total} formula${total === 1 ? "" : "s"}${extra}.` : "No formulas found.");
     if ((state.stats.total || 0) > 0 && texDetailsEl) texDetailsEl.open = true;
     reportPanelSize();
   }
