@@ -2780,21 +2780,21 @@ function positionPanelNearFab(panel, wrap) {
 
   const panelH = pr.height || 260;
 
-  // 目标：面板垂直中心对齐浮标中心
+  // 目标：面板垂直中心对齐浮标中心，并夹紧到视口内（以视口坐标计算）。
   let top = (wr.top + wr.height / 2) - panelH / 2;
-
-  // 夹紧到视口内
   top = Math.max(10, Math.min(top, window.innerHeight - panelH - 10));
 
-  // 左右：根据当前吸附边决定放哪边
-  const side = wrap.dataset.side; // "left" or "right"
-  panel.style.top = `${top}px`;
+  // 面板是 .ef-wrap 的子元素，而 .ef-wrap 带有 transform，
+  // 这会让 position:fixed 的面板以 .ef-wrap 为参照而不是视口。
+  // 所以必须把视口坐标换算成相对 .ef-wrap 的偏移，否则浮标越靠下，面板就被推得越靠下甚至移出屏幕。
+  panel.style.top = `${top - wr.top}px`;
 
+  const side = wrap.dataset.side; // "left" or "right"
   if (side === "right") {
-    panel.style.right = `${(window.innerWidth - wr.left) + 10}px`; // 面板出现在浮标左侧
+    panel.style.right = `${wr.width + 10}px`; // 面板出现在浮标左侧
     panel.style.left = "auto";
   } else {
-    panel.style.left = `${wr.right + 10}px`; // 面板出现在浮标右侧
+    panel.style.left = `${wr.width + 10}px`; // 面板出现在浮标右侧
     panel.style.right = "auto";
   }
 }
