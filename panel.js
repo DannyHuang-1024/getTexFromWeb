@@ -57,8 +57,11 @@ function bindEvents() {
   btnContinuous?.addEventListener("click", () => sendAction("TOGGLE_CONTINUOUS_SCAN"));
   btnClose?.addEventListener("click", () => sendAction("CLOSE_PANEL"));
   btnClear?.addEventListener("click", async () => {
+    // 浮窗模式下状态由页面脚本通过 STATUS 消息回传；弹窗模式直接看返回值。
     const res = await sendAction("CLEAR_HIGHLIGHTS");
-    if (res === undefined || res?.ok) setStatus("Highlights cleared.");
+    if (res?.ok) {
+      setStatus(res.payload?.cleared ? "Highlights and results cleared." : "No formulas to clear.");
+    }
   });
   singleLineEl?.addEventListener("change", () => {
     currentCopySingleLine = singleLineEl.checked;
@@ -129,6 +132,11 @@ function handleFrameMessage(e) {
     return;
   }
 
+  if (msg.type === "STATUS") {
+    setStatus(String(msg.payload || ""));
+    return;
+  }
+
   if (msg.type === "TEX_LIST") {
     renderTexList(Array.isArray(msg.payload) ? msg.payload : []);
     return;
@@ -141,8 +149,7 @@ function handleFrameMessage(e) {
 
 function sendAction(action) {
   if (isPopup) {
-    sendActionToActiveTab(action);
-    return;
+    return sendActionToActiveTab(action);
   }
 
   window.parent.postMessage(

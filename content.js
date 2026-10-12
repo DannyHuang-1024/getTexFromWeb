@@ -9,6 +9,30 @@ const COPY_FORMAT_IDS = new Set([
   "equation"
 ]);
 let currentCopyFormat = COPY_FORMAT_DEFAULT;
+
+// 扩展被重载/更新后，页面里残留的旧内容脚本再调用 chrome.* 会抛 "Extension context invalidated"。
+// 所有 chrome.* 调用都走下面的安全包装。
+function isExtensionContextValid() {
+  try {
+    return Boolean(chrome.runtime?.id);
+  } catch {
+    return false;
+  }
+}
+
+function safeStorageSet(items) {
+  try {
+    if (isExtensionContextValid()) chrome.storage?.local?.set?.(items);
+  } catch {}
+}
+
+function safeGetURL(path) {
+  try {
+    return isExtensionContextValid() ? chrome.runtime.getURL(path) : "";
+  } catch {
+    return "";
+  }
+}
 const COPY_SINGLE_LINE_STORAGE_KEY = "latexCopySingleLine";
 const COPY_SINGLE_LINE_DEFAULT = true;
 let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
@@ -29,7 +53,7 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
   const Z = 2147483647;         // 极高层级，保证浮窗显示在页面最上层。
 
   syncCopyFormatSetting();
-  chrome.storage?.onChanged?.addListener?.((changes, areaName) => {
+  try { chrome.storage?.onChanged?.addListener?.((changes, areaName) => {
     if (areaName !== "local") return;
     if (changes[COPY_FORMAT_STORAGE_KEY]) {
       currentCopyFormat = normalizeCopyFormatId(changes[COPY_FORMAT_STORAGE_KEY].newValue);
@@ -37,7 +61,7 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
     if (changes[COPY_SINGLE_LINE_STORAGE_KEY]) {
       currentCopySingleLine = changes[COPY_SINGLE_LINE_STORAGE_KEY].newValue !== false;
     }
-  });
+  }); } catch {}
 
   // 创建 Shadow DOM 宿主容器，用于隔离样式，避免被页面 CSS 干扰。
   const host = document.createElement("div");
@@ -56,9 +80,11 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
   const defaultState = { side: "right", top: Math.round(window.innerHeight * 0.35) };
 
   // 从本地存储读取上次拖拽位置；没有则使用默认位置。
-  chrome.storage?.local?.get?.({ edgeFabState: defaultState }, (res) => {
-    init(res.edgeFabState || defaultState);
-  });
+  try {
+    chrome.storage?.local?.get?.({ edgeFabState: defaultState }, (res) => {
+      init(res?.edgeFabState || defaultState);
+    });
+  } catch {}
 
   // 数值夹取：保证 top 不会越界到可视区域外。
   function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
@@ -326,8 +352,8 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
     wrap.append(hoverPad, fab, mini, panel);
     shadow.append(style, wrap);
 
-    if (chrome.runtime?.onMessage) {
-      chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    try {
+      chrome.runtime?.onMessage?.addListener((msg, sender, sendResponse) => {
         if (msg?.type !== "PANEL_ACTION") return false;
 
         Promise.resolve(handlePanelAction(msg.payload?.action)).then(
@@ -336,6 +362,15 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
         );
         return true;
       });
+    } catch {}
+
+    // 扩展失效后（被重载/更新），这份旧脚本已经无法工作：撤掉 UI 和页面标记，避免留下点不动的残骸。
+    function teardownIfOrphaned() {
+      if (isExtensionContextValid()) return false;
+      try { stopFormulaObserver(); } catch {}
+      try { clearAllFormulaTags(); } catch {}
+      host.remove();
+      return true;
     }
 
     window.addEventListener("message", (e) => {
@@ -356,6 +391,10 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
       if (panel.dataset.show === "1") positionPanelNearFab(panel, wrap);
     });
 
+
+    function sendPanelStatus(text) {
+      iframe?.contentWindow?.postMessage({ type: "STATUS", payload: text }, "*");
+    }
 
     function sendTexList() {
       iframe?.contentWindow?.postMessage({ type: "TEX_LIST", payload: lastTexList }, "*");
@@ -402,6 +441,7 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
       const hadTags = document.querySelector(".ext-formula-hover, [" + FORMULA_TEX_ATTR + "]") !== null;
       if (!hadTags && !lastTexList.length) {
         toast("No formulas yet. Run a scan first.");
+        sendPanelStatus("No formulas to clear.");
         return false;
       }
 
@@ -410,6 +450,7 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
       lastTexList = [];
       sendTexList();
       toast("Highlights and results cleared");
+      sendPanelStatus("Highlights and results cleared.");
       return true;
     }
 
@@ -589,7 +630,7 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
       if (iframe) return;
 
       iframe = document.createElement("iframe");
-      iframe.src = chrome.runtime.getURL("panel.html");
+      iframe.src = safeGetURL("panel.html");
       panel.appendChild(iframe);
       iframe.addEventListener("load", () => {
         iframe.contentWindow?.postMessage?.(
@@ -657,6 +698,7 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
     let raf = 0; // requestAnimationFrame 句柄。
 
     fab.addEventListener("pointerdown", (ev) => {
+      if (teardownIfOrphaned()) return;
       if (ev.button !== 0) return; // 只处理鼠标左键。
       dragging = true;
       wrap.__dragJustEnded = false; // 标记拖拽开始。
@@ -709,7 +751,7 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
       updateMenuDir();
 
       // 保存最终位置，供下次进入页面恢复。
-      chrome.storage?.local?.set?.({ edgeFabState: { side: finalSide, top: Math.round(finalTop) } });
+      safeStorageSet({ edgeFabState: { side: finalSide, top: Math.round(finalTop) } });
 
       // 防止拖拽结束瞬间触发点击。
       wrap.__dragJustEnded = true;
@@ -726,7 +768,7 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
       wrap.style.top = `${fixedTop}px`;
       updateMenuDir();
       if (panel.dataset.show === "1") positionPanelNearFab(panel, wrap);
-      chrome.storage?.local?.set?.({ edgeFabState: { side: wrap.dataset.side, top: Math.round(fixedTop) } });
+      safeStorageSet({ edgeFabState: { side: wrap.dataset.side, top: Math.round(fixedTop) } });
     });
 
     // 初始状态：半隐藏。
@@ -762,7 +804,7 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
         if (isImage) {
           const img = document.createElement("img");
           // 如果不是 URL（比如 resources/panel.svg），用 runtime.getURL 转成扩展资源 URL
-          img.src = looksLikeUrl ? s : chrome.runtime.getURL(s);
+          img.src = looksLikeUrl ? s : safeGetURL(s);
           img.alt = tip;
           img.style.width = "18px";
           img.style.height = "18px";
@@ -784,6 +826,7 @@ let currentCopySingleLine = COPY_SINGLE_LINE_DEFAULT;
       b.append(tipEl, contentEl);
       b.addEventListener("click", (e) => {
         e.stopPropagation();
+        if (teardownIfOrphaned()) return;
         onClick();
       });
       return b;
@@ -2679,9 +2722,8 @@ function handleFormulaCopyClick(ev) {
 }
 
 function syncCopyFormatSetting() {
-  if (!chrome.storage?.local?.get) return;
-
   try {
+    if (!isExtensionContextValid() || !chrome.storage?.local?.get) return;
     chrome.storage.local.get({
       [COPY_FORMAT_STORAGE_KEY]: COPY_FORMAT_DEFAULT,
       [COPY_SINGLE_LINE_STORAGE_KEY]: COPY_SINGLE_LINE_DEFAULT
